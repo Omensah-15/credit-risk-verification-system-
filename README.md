@@ -1,4 +1,4 @@
-# Credit Risk Verification (Streamlit + LightGBM + Blockchain)
+# Credit Risk Verification System
 
 Industry-ready project that:
 - trains a LightGBM credit-risk model with Optuna,
