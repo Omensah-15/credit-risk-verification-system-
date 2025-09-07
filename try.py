@@ -1,7 +1,7 @@
 """
 Industry-ready Streamlit app for blockchain-backed credit risk verification.
-Features: New verification, history with tx_hash storage, SHAP explanations, CSV export, blockchain/ledger recording.
-Requirements: Install dependencies, configure .env, and ensure model/contract files exist.
+Fixes: Ensured verification history saves and displays correctly.
+Requirements: Install dependencies, configure .env, ensure model/contract files exist.
 """
 
 import os
@@ -119,7 +119,15 @@ def init_db():
         cur.execute("CREATE INDEX IF NOT EXISTS idx_applicant_id ON verification_results (applicant_id)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_timestamp ON verification_results (timestamp)")
         conn.commit()
-    logging.info("Database initialized.")
+        logging.info("Database initialized successfully.")
+
+def verify_record_exists(applicant_id: str) -> bool:
+    """Verify if a record exists in the database."""
+    with get_db_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM verification_results WHERE applicant_id = ?", (applicant_id,))
+        count = cur.fetchone()[0]
+        return count > 0
 
 init_db()
 
@@ -133,7 +141,7 @@ def generate_data_hash(data: Dict[str, Any]) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 def validate_input(applicant_id: str, applicant_name: str, applicant_email: str, 
-                   annual_income: float, loan_amount: float, num_defaults: int, num_previous_loans: int) -> bool:
+                  annual_income: float, loan_amount: float, num_defaults: int, num_previous_loans: int) -> bool:
     """Validate user inputs."""
     if not applicant_id or not re.match(r"^[a-zA-Z0-9_-]{1,50}$", applicant_id):
         st.error("Applicant ID must be 1-50 alphanumeric characters with underscores or hyphens.")
@@ -193,7 +201,7 @@ def preprocess_inference_data(input_data: Any) -> pd.DataFrame:
 
     if not os.path.exists(FEATURE_COLUMNS_FILE):
         raise FileNotFoundError(f"Feature columns file not found: {FEATURE_COLUMNS_FILE}")
-
+    
     feature_columns: List[str] = joblib.load(FEATURE_COLUMNS_FILE)
     for col in feature_columns:
         if col not in df.columns:
@@ -286,7 +294,6 @@ def get_shap_explainer(model, background_df: Optional[tuple] = None, nsample: in
     if not SHAP_AVAILABLE:
         raise RuntimeError("SHAP is not installed.")
     
-    # Convert tuple back to DataFrame if cached
     if background_df is not None:
         background_df = pd.DataFrame(background_df[0], columns=background_df[1])
     
@@ -312,7 +319,6 @@ def get_shap_explainer(model, background_df: Optional[tuple] = None, nsample: in
 
 def explain_prediction_sampled(model, input_df: pd.DataFrame, background_df: Optional[pd.DataFrame] = None, nsample: int = 100):
     """Generate SHAP explanations with memory safety."""
-    # Convert DataFrame to tuple for caching
     bg_tuple = None if background_df is None else (background_df.values, background_df.columns.tolist())
     explainer = get_shap_explainer(model, bg_tuple, nsample)
     try:
@@ -378,7 +384,7 @@ class BlockchainManager:
         return True  # JSON ledger fallback
 
     def record_verification(self, applicant_id: str, data_hash: str, risk_score: int, 
-                            risk_category: str, probability_of_default: float) -> str:
+                           risk_category: str, probability_of_default: float) -> str:
         """Record verification on blockchain or JSON ledger."""
         logging.info(f"Recording verification for applicant_id: {applicant_id}")
         if self.w3 and self.contract and self.account_address and self.private_key:
@@ -495,7 +501,7 @@ def get_blockchain_manager() -> BlockchainManager:
 
 # -------------------- Streamlit UI --------------------
 st.set_page_config(page_title="Credit Risk Verification", layout="wide", page_icon="🔒")
-st.markdown("<h1 style='text-align:center;'>🔒 Blockchain-Backed Credit Risk Verification System</h1>", unsafe_allow_html=True)
+st.markdown("<h1 style='text-align:center;'>🔒 Blockchain-Backed Credit Risk Verification</h1>", unsafe_allow_html=True)
 
 # Check dependencies on startup
 check_dependencies()
@@ -512,37 +518,38 @@ if menu == "New Verification":
     with st.form("verification_form", clear_on_submit=False):
         col1, col2 = st.columns(2)
         with col1:
-            applicant_id = st.text_input("Applicant ID", help="Unique identifier")
-            applicant_name = st.text_input("Full name")
-            applicant_email = st.text_input("Email")
+            applicant_id = st.text_input("Applicant ID", help="Unique identifier (alphanumeric, 1-50 chars)")
+            applicant_name = st.text_input("Full Name", help="Letters and spaces only")
+            applicant_email = st.text_input("Email", help="Valid email address")
             age = st.slider("Age", 18, 100, 30)
             annual_income = st.number_input("Annual Income ($)", min_value=0, value=50000, step=1000)
             employment_status = st.selectbox("Employment Status", ["employed", "self-employed", "unemployed", "student"])
             education_level = st.selectbox("Education Level", ["High School", "Diploma", "Bachelor", "Master", "PhD"])
-            credit_history_length = st.slider("Credit history (years)", 0, 30, 5)
+            credit_history_length = st.slider("Credit History (Years)", 0, 30, 5)
         with col2:
-            num_previous_loans = st.slider("Number of previous loans", 0, 20, 2)
-            num_defaults = st.slider("Number of defaults", 0, 10, 0)
-            avg_payment_delay_days = st.slider("Avg payment delay (days)", 0, 60, 5)
-            current_credit_score = st.slider("Current credit score", 300, 850, 650)
-            loan_amount = st.number_input("Loan amount ($)", min_value=0, value=25000, step=1000)
-            loan_term_months = st.slider("Loan term (months)", 12, 84, 36)
-            loan_purpose = st.selectbox("Loan purpose", ["Business", "Crypto-Backed", "Car Loan", "Education", "Home Loan"])
-            collateral_present = st.radio("Collateral present", ["Yes", "No"])
+            num_previous_loans = st.slider("Number of Previous Loans", 0, 20, 2)
+            num_defaults = st.slider("Number of Defaults", 0, 10, 0)
+            avg_payment_delay_days = st.slider("Avg Payment Delay (Days)", 0, 60, 5)
+            current_credit_score = st.slider("Current Credit Score", 300, 850, 650)
+            loan_amount = st.number_input("Loan Amount ($)", min_value=0, value=25000, step=1000)
+            loan_term_months = st.slider("Loan Term (Months)", 12, 84, 36)
+            loan_purpose = st.selectbox("Loan Purpose", ["Business", "Crypto-Backed", "Car Loan", "Education", "Home Loan"])
+            collateral_present = st.radio("Collateral Present", ["Yes", "No"])
 
-        st.markdown("**Blockchain & Fraud indicators**")
+        st.markdown("**Blockchain & Fraud Indicators**")
         col3, col4 = st.columns(2)
         with col3:
-            identity_verified_on_chain = st.radio("Identity verified on chain", [1, 0], format_func=lambda x: "Yes" if x == 1 else "No")
-            fraud_alert_flag = st.radio("Fraud alert flag", [0, 1], format_func=lambda x: "Yes" if x == 1 else "No")
+            identity_verified_on_chain = st.radio("Identity Verified on Chain", [1, 0], format_func=lambda x: "Yes" if x == 1 else "No")
+            fraud_alert_flag = st.radio("Fraud Alert Flag", [0, 1], format_func=lambda x: "Yes" if x == 1 else "No")
         with col4:
-            transaction_consistency_score = st.slider("Transaction consistency", 0.0, 1.0, 0.8)
-            on_chain_credit_history = st.slider("On-chain credit history", 0, 10, 5)
+            transaction_consistency_score = st.slider("Transaction Consistency", 0.0, 1.0, 0.8)
+            on_chain_credit_history = st.slider("On-Chain Credit History", 0, 10, 5)
 
         submitted = st.form_submit_button("Run Verification")
 
     if submitted:
         if not validate_input(applicant_id, applicant_name, applicant_email, annual_income, loan_amount, num_defaults, num_previous_loans):
+            logging.warning(f"Input validation failed for applicant_id: {applicant_id}")
             st.stop()
 
         application = {
@@ -570,88 +577,127 @@ if menu == "New Verification":
         }
 
         data_hash = generate_data_hash(application)
-        try:
-            with get_db_connection() as conn:
-                conn.execute("BEGIN TRANSACTION")
-                cur = conn.cursor()
-                cur.execute("""
-                    INSERT OR REPLACE INTO verification_results
-                    (applicant_id, applicant_name, applicant_email, age, data_hash, risk_score, probability_of_default, risk_category, timestamp, tx_hash)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (application['applicant_id'], application['applicant_name'], application['applicant_email'], application['age'],
-                      data_hash, None, None, None, application['submission_timestamp'], None))
-                conn.commit()
+        with st.spinner("Processing verification..."):
+            try:
+                with get_db_connection() as conn:
+                    conn.execute("BEGIN TRANSACTION")
+                    cur = conn.cursor()
+                    cur.execute("""
+                        INSERT OR REPLACE INTO verification_results
+                        (applicant_id, applicant_name, applicant_email, age, data_hash, risk_score, probability_of_default, risk_category, timestamp, tx_hash)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (application['applicant_id'], application['applicant_name'], application['applicant_email'], 
+                          application['age'], data_hash, None, None, None, application['submission_timestamp'], None))
+                    conn.commit()
+                    logging.info(f"Inserted initial record for applicant_id: {applicant_id}")
 
-                proba, score, category, processed = predict_single(application)
-                
-                cur.execute("""
-                    UPDATE verification_results
-                    SET risk_score = ?, probability_of_default = ?, risk_category = ?
-                    WHERE applicant_id = ?
-                """, (score, proba, category, application['applicant_id']))
-                conn.commit()
-        except FileNotFoundError as e:
-            st.error(str(e))
-            logging.error(str(e))
-            st.stop()
-        except Exception as e:
-            st.error(f"Operation failed: {e}")
-            logging.error(f"Operation failed: {e}")
-            st.stop()
+                    # Verify insertion
+                    if not verify_record_exists(applicant_id):
+                        raise RuntimeError("Failed to insert record into database")
 
-        st.markdown("### Result")
-        c1, c2, c3 = st.columns([1,1,1])
+                    proba, score, category, processed = predict_single(application)
+                    
+                    cur.execute("""
+                        UPDATE verification_results
+                        SET risk_score = ?, probability_of_default = ?, risk_category = ?
+                        WHERE applicant_id = ?
+                    """, (score, proba, category, application['applicant_id']))
+                    conn.commit()
+                    logging.info(f"Updated record with prediction for applicant_id: {applicant_id}")
+
+                    # Clear cache to ensure history updates
+                    st.cache_data.clear()
+
+            except FileNotFoundError as e:
+                conn.rollback()
+                st.error(f"File not found: {e}")
+                logging.error(f"File not found: {e}")
+                st.stop()
+            except Exception as e:
+                conn.rollback()
+                st.error(f"Verification failed: {e}")
+                logging.error(f"Verification failed: {e}")
+                st.stop()
+
+        st.markdown("### Verification Result")
+        c1, c2, c3 = st.columns(3)
         c1.metric("Risk Score", score)
         c2.metric("Probability of Default", f"{proba:.2%}")
         c3.metric("Risk Category", category)
         st.markdown(f"**Data Hash:** `{data_hash[:12]}...`")
 
         if SHAP_AVAILABLE:
-            with st.expander("View SHAP explanation (sampled)"):
+            with st.expander("View SHAP Explanation"):
                 sample_csv = os.path.join(DATA_DIR, "sample_dataset.csv")
                 bg = pd.read_csv(sample_csv) if os.path.exists(sample_csv) else None
-                try:
-                    model = load_models()[0]
-                    explainer, shap_vals = explain_prediction_sampled(model, processed, background_df=bg, nsample=100)
-                    fig = plot_shap_decision(explainer, shap_vals, processed, index=0)
-                    st.pyplot(fig)
-                except Exception as e:
-                    st.warning(f"SHAP explanation not available: {e}")
-                    logging.warning(f"SHAP explanation failed: {e}")
-        else:
-            st.info("SHAP not installed — install shap for explanations.")
+                with st.spinner("Generating SHAP explanation..."):
+                    try:
+                        model = load_models()[0]
+                        explainer, shap_vals = explain_prediction_sampled(model, processed, background_df=bg, nsample=100)
+                        fig = plot_shap_decision(explainer, shap_vals, processed, index=0)
+                        st.pyplot(fig)
+                    except Exception as e:
+                        st.warning(f"SHAP explanation failed: {e}")
+                        logging.warning(f"SHAP explanation failed: {e}")
 
         bm = st.session_state.blockchain_manager
-        if st.button("Store immutably (blockchain/ledger)"):
-            with st.spinner("Storing verification..."):
+        if st.button("Store Immutably (Blockchain/Ledger)", key="store_blockchain"):
+            with st.spinner("Storing on blockchain/ledger..."):
                 tx = bm.record_verification(applicant_id, data_hash, score, category, proba)
                 if isinstance(tx, str) and (tx.startswith("0x") or tx == "LOCAL_LEDGER_OK"):
-                    with get_db_connection() as conn:
-                        cur = conn.cursor()
-                        cur.execute("UPDATE verification_results SET tx_hash = ? WHERE applicant_id = ?", (tx, applicant_id))
-                        conn.commit()
-                    st.success(f"Stored with transaction hash: {tx}")
+                    try:
+                        with get_db_connection() as conn:
+                            cur = conn.cursor()
+                            cur.execute("UPDATE verification_results SET tx_hash = ? WHERE applicant_id = ?", (tx, applicant_id))
+                            conn.commit()
+                            logging.info(f"Stored tx_hash {tx} for applicant_id: {applicant_id}")
+                            st.cache_data.clear()  # Clear cache to refresh history
+                        st.success(f"Stored successfully: {tx[:12]}..." if tx.startswith("0x") else "Stored in JSON ledger")
+                    except Exception as e:
+                        st.error(f"Failed to update database with transaction hash: {e}")
+                        logging.error(f"Database update failed: {e}")
                 else:
                     st.error(f"Storage failed: {tx}")
+                    logging.error(f"Blockchain/ledger storage failed: {tx}")
 
 # ---------- Verification History ----------
 elif menu == "Verification History":
     st.header("Verification History")
-    with get_db_connection() as conn:
-        df = pd.read_sql_query("SELECT * FROM verification_results ORDER BY timestamp DESC", conn)
+    @st.cache_data
+    def load_verification_history(_cache_buster: str) -> pd.DataFrame:
+        """Load verification history from database."""
+        with get_db_connection() as conn:
+            try:
+                df = pd.read_sql_query("SELECT * FROM verification_results ORDER BY timestamp DESC", conn)
+                logging.info(f"Loaded {len(df)} records from verification_results")
+                return df
+            except Exception as e:
+                logging.error(f"Failed to load verification history: {e}")
+                st.error(f"Failed to load verification history: {e}")
+                return pd.DataFrame()
+
+    # Use timestamp as cache buster to force refresh
+    cache_buster = str(datetime.utcnow().timestamp())
+    df = load_verification_history(cache_buster)
 
     if df.empty:
-        st.info("No verification records yet. Run 'New Verification' to add.")
+        st.info("No verification records found. Run 'New Verification' to add records.")
+        with get_db_connection() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='verification_results'")
+            if not cur.fetchone():
+                st.warning("Database table 'verification_results' does not exist. Reinitializing...")
+                init_db()
     else:
         df['probability_of_default'] = pd.to_numeric(df['probability_of_default'], errors='coerce')
 
-        st.markdown("### Summary Cards")
+        st.markdown("### Verification Summary")
         for idx, row in df.iterrows():
             cat = row.get('risk_category') or "Unknown"
-            score = row.get('risk_score') if row.get('risk_score') is not None else ""
+            score = row.get('risk_score') if pd.notnull(row.get('risk_score')) else "N/A"
             proba = row.get('probability_of_default')
-            proba_str = f"{float(proba):.2%}" if pd.notnull(proba) else ""
-            applicant_label = f"{row.get('applicant_name') or ''} ({row.get('applicant_id')})"
+            proba_str = f"{float(proba):.2%}" if pd.notnull(proba) else "N/A"
+            applicant_label = f"Hashed Name ({row.get('applicant_id')})"
             data_hash = row.get("data_hash") or "N/A"
             tx_hash = row.get("tx_hash") or "N/A"
             
@@ -681,45 +727,55 @@ elif menu == "Verification History":
                 """, unsafe_allow_html=True
             )
 
-        st.markdown("### Full Table")
+        st.markdown("### Verification Records")
         display_df = df.copy()
         display_df['probability_of_default'] = display_df['probability_of_default'].apply(
-            lambda x: f"{float(x):.2%}" if pd.notnull(x) else ""
+            lambda x: f"{float(x):.2%}" if pd.notnull(x) else "N/A"
         )
         display_df['data_hash'] = display_df['data_hash'].apply(lambda x: x[:12] + "..." if x and len(x) > 12 else x)
         display_df['tx_hash'] = display_df['tx_hash'].apply(lambda x: x[:12] + "..." if x and len(x) > 12 else x)
 
         st.dataframe(
-            display_df[['applicant_id', 'applicant_name', 'risk_score', 'risk_category',
-                        'probability_of_default', 'data_hash', 'timestamp', 'tx_hash']],
+            display_df[['applicant_id', 'risk_score', 'risk_category', 'probability_of_default', 'data_hash', 'timestamp', 'tx_hash']],
             use_container_width=True
         )
 
-        st.markdown("### Export Options")
+        st.markdown("### Export Records")
         export_cols = st.multiselect(
             "Select columns to export",
             options=df.columns.tolist(),
-            default=['applicant_id', 'risk_score', 'risk_category', 'probability_of_default', 'data_hash', 'timestamp', 'tx_hash']
+            default=['applicant_id', 'risk_score', 'risk_category', 'probability_of_default', 'data_hash', 'timestamp', 'tx_hash'],
+            key="export_cols"
         )
-        csv = df[export_cols].to_csv(index=False).encode("utf-8")
-        st.download_button("📥 Download CSV of History", csv, "verification_history.csv", "text/csv")
+        if export_cols:
+            csv = df[export_cols].to_csv(index=False).encode("utf-8")
+            st.download_button(
+                "📥 Download CSV",
+                csv,
+                "verification_history.csv",
+                "text/csv",
+                key="download_csv"
+            )
 
-        ids_with_tx = df[df['tx_hash'].notnull()]['applicant_id'].tolist()
+        ids_with_tx = display_df[display_df['tx_hash'].notnull() & (display_df['tx_hash'] != "LOCAL_LEDGER_OK")]['applicant_id'].tolist()
         if ids_with_tx:
-            st.markdown("### Verify Stored Record")
-            selected_id = st.selectbox("Select applicant ID with a tx", ids_with_tx)
-            if st.button("Fetch verification from chain/ledger"):
-                bm = st.session_state.blockchain_manager
-                res = bm.get_verification(selected_id)
-                if 'error' in res:
-                    st.error(res['error'])
-                else:
-                    db_row = df[df['applicant_id'] == selected_id].iloc[0]
-                    if res['data_hash'] == db_row['data_hash'] and res['risk_score'] == db_row['risk_score']:
-                        st.success("Record verified: matches blockchain/ledger.")
+            st.markdown("### Verify Blockchain Record")
+            selected_id = st.selectbox("Select Applicant ID", ids_with_tx, key="verify_select")
+            if st.button("Verify on Blockchain/Ledger", key="verify_blockchain"):
+                with st.spinner("Verifying record..."):
+                    bm = st.session_state.blockchain_manager
+                    res = bm.get_verification(selected_id)
+                    if 'error' in res:
+                        st.error(f"Verification failed: {res['error']}")
+                        logging.error(f"Verification failed for {selected_id}: {res['error']}")
                     else:
-                        st.error("Verification mismatch between database and blockchain/ledger.")
-                    st.json(res)
+                        db_row = df[df['applicant_id'] == selected_id].iloc[0]
+                        if res['data_hash'] == db_row['data_hash'] and res['risk_score'] == db_row['risk_score']:
+                            st.success("Record verified: Matches blockchain/ledger.")
+                        else:
+                            st.error("Verification mismatch between database and blockchain/ledger.")
+                            logging.error(f"Verification mismatch for {selected_id}")
+                        st.json(res)
 
 # ---------- Data Insights ----------
 elif menu == "Data Insights":
@@ -731,13 +787,14 @@ elif menu == "Data Insights":
             st.metric("Total Records", len(df_sample))
             st.metric("Default Rate", f"{df_sample['default_flag'].mean():.2%}" if 'default_flag' in df_sample.columns else "N/A")
             st.subheader("Credit Score Distribution")
-            fig, ax = plt.subplots()
+            fig, ax = plt.subplots(figsize=(10, 6))
             df_sample['current_credit_score'].hist(bins=30, ax=ax)
             ax.set_xlabel("Credit Score")
             ax.set_ylabel("Count")
+            plt.tight_layout()
             st.pyplot(fig)
         except Exception as e:
-            st.error(f"Could not load sample dataset: {e}")
+            st.error(f"Failed to load sample dataset: {e}")
             logging.error(f"Sample dataset loading failed: {e}")
     else:
         st.info("Sample dataset not found. Run train.py to generate one.")
@@ -748,38 +805,41 @@ elif menu == "Blockchain Status":
     bm = st.session_state.blockchain_manager
     st.write("Provider URL:", bm.provider_url)
     connected = bm.is_connected()
-    st.write("Connected:", connected)
+    st.write("Connection Status:", "Connected" if connected else "Disconnected")
     if connected and WEB3_AVAILABLE and bm.w3:
         try:
             st.write("Chain ID:", bm.w3.eth.chain_id)
             if bm.account_address:
                 bal = bm.w3.eth.get_balance(bm.account_address)
-                st.write("Account balance (ETH):", bm.w3.from_wei(bal, "ether"))
-        except Exception as e:
-            st.warning(f"Could not query chain details: {e}")
-            logging.warning(f"Chain details query failed: {e}")
+                st.write("Account Balance (ETH):", bm.w3.from_wei(bal, "ether"))
+        except Web3Exception as e:
+            st.warning(f"Failed to query blockchain details: {e}")
+            logging.warning(f"Blockchain details query failed: {e}")
     else:
-        st.info("Using JSON ledger fallback (no web3 or contract configured).")
+        st.info("Using JSON ledger fallback (no Web3 or contract configured).")
 
 # ---------- Model Info ----------
 elif menu == "Model Info":
     st.header("Model Information")
     model, feat_cols = load_models()
     if model is None:
-        st.info("No trained/calibrated model found. Run train.py first.")
+        st.info("No trained model found. Run train.py first.")
     else:
-        st.success("Model loaded")
-        st.write("Feature columns (count = %d):" % len(feat_cols))
+        st.success("Model loaded successfully")
+        st.write(f"Feature Columns (Count: {len(feat_cols)}):")
         st.write(feat_cols)
         base = load_base_model()
         if base is not None and hasattr(base, "feature_importances_"):
             try:
-                fi = getattr(base, "feature_importances_")
+                fi = base.feature_importances_
                 fi_df = pd.DataFrame({"feature": feat_cols, "importance": fi}).sort_values("importance", ascending=False).head(30)
-                st.subheader("Top feature importances")
-                st.bar_chart(fi_df.set_index("feature")["importance"])
+                st.subheader("Top Feature Importances")
+                fig, ax = plt.subplots(figsize=(10, 6))
+                fi_df.plot.bar(x="feature", y="importance", ax=ax)
+                plt.tight_layout()
+                st.pyplot(fig)
             except Exception as e:
-                st.warning(f"Feature importance plotting failed: {e}")
+                st.warning(f"Failed to plot feature importances: {e}")
                 logging.warning(f"Feature importance plotting failed: {e}")
 
 if __name__ == "__main__":
