@@ -624,7 +624,6 @@ elif menu == "Verification History" or menu == "Verification History".replace(" 
                 else:
                     st.success("Record retrieved")
                     st.json(res)
-                )
     
     # ---------- Blockchain Status Page ----------
     elif menu == "Blockchain Status":
