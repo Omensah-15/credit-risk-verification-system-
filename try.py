@@ -621,10 +621,13 @@ def main():
             with col1:
                 st.metric("Total Verifications", len(df))
             with col2:
-                avg_score = df['risk_score'].mean() if 'risk_score' in df.columns else 0
+                avg_score = df['risk_score'].mean() if 'risk_score' in df.columns and not df['risk_score'].isnull().all() else 0
                 st.metric("Average Risk Score", f"{avg_score:.0f}/1000")
             with col3:
-                on_blockchain = len(df[df['tx_hash'].str.startswith('0x', na=False)]) if 'tx_hash' in df.columns else 0
+                if 'tx_hash' in df.columns:
+                    on_blockchain = len(df[df['tx_hash'].str.startswith('0x', na=False)])
+                else:
+                    on_blockchain = 0
                 st.metric("On Blockchain", f"{on_blockchain}/{len(df)}")
             
             # Filter options
@@ -632,10 +635,11 @@ def main():
             filter_col1, filter_col2 = st.columns(2)
             
             with filter_col1:
+                risk_options = df['risk_category'].unique() if 'risk_category' in df.columns else []
                 risk_filter = st.multiselect(
                     "Risk Category",
-                    options=df['risk_category'].unique() if 'risk_category' in df.columns else [],
-                    default=df['risk_category'].unique() if 'risk_category' in df.columns else []
+                    options=risk_options,
+                    default=risk_options
                 )
             
             with filter_col2:
@@ -658,15 +662,19 @@ def main():
             st.subheader("Verification Records")
             if not filtered_df.empty:
                 for _, row in filtered_df.iterrows():
+                    # Safely get risk category with default value
+                    risk_category = row.get('risk_category', 'Unknown')
+                    
                     # Determine risk color
                     risk_class = "risk-medium"
-                    if "Low" in row.get('risk_category', ''):
+                    if risk_category and "Low" in risk_category:
                         risk_class = "risk-low"
-                    elif "High" in row.get('risk_category', ''):
+                    elif risk_category and "High" in risk_category:
                         risk_class = "risk-high"
                     
                     # Determine blockchain status
-                    blockchain_status = "🔗 On Blockchain" if row.get('tx_hash', '').startswith('0x') else "📝 Local Storage"
+                    tx_hash = row.get('tx_hash', '')
+                    blockchain_status = "🔗 On Blockchain" if tx_hash and tx_hash.startswith('0x') else "📝 Local Storage"
                     
                     with st.container():
                         st.markdown(f"""
@@ -674,7 +682,7 @@ def main():
                                 <h3>{row.get('applicant_name', 'N/A')} ({row.get('applicant_id', 'N/A')})</h3>
                                 <p><b>Risk Score:</b> {row.get('risk_score', 'N/A')}/1000 | 
                                 <b>Probability of Default:</b> {float(row.get('probability_of_default', 0)):.2%} | 
-                                <span class="{risk_class}"><b>Category:</b> {row.get('risk_category', 'N/A')}</span></p>
+                                <span class="{risk_class}"><b>Category:</b> {risk_category}</span></p>
                                 <p><b>Data Hash:</b> {row.get('data_hash', 'N/A')[:16]}... | 
                                 <b>Status:</b> {blockchain_status}</p>
                                 <p><b>Timestamp:</b> {row.get('timestamp', 'N/A')}</p>
@@ -688,7 +696,8 @@ def main():
                                 st.session_state.selected_applicant = row['applicant_id']
                         with btn_col2:
                             if st.button("Verify on Blockchain", key=f"verify_{row['applicant_id']}"):
-                                if not row.get('tx_hash', '').startswith('0x'):
+                                tx_hash = row.get('tx_hash', '')
+                                if not (tx_hash and tx_hash.startswith('0x')):
                                     # Try to save to blockchain
                                     with st.spinner("Saving to blockchain..."):
                                         tx_hash = bm.record_verification(
