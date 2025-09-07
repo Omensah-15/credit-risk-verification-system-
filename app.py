@@ -552,17 +552,17 @@ if menu == "New Verification":
                             bg = pd.read_csv(sample_csv)
                         except Exception:
                             bg = None
-                   try:
-            model = load_models()[0]  # get your trained model
-            # explain prediction safely
-            explainer, shap_vals = explain_prediction_sampled(
-                model,
-                processed,
-                background_df=bg,
-                nsample=100
-            )
-            fig = plot_shap_decision(explainer, shap_vals, processed, index=0)
-            st.pyplot(fig)
+                    try:
+                        model = load_models()[0]  # get your trained model
+                       # explain prediction safely
+                        explainer, shap_vals = explain_prediction_sampled(
+                            model,
+                            processed,
+                            background_df=bg,
+                            nsample=100
+                         )
+                         fig = plot_shap_decision(explainer, shap_vals, processed, index=0)
+                         st.pyplot(fig)
                     except Exception as e:
                         st.warning(f"SHAP explanation not available: {e}")
             else:
