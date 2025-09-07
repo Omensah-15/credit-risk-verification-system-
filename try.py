@@ -1,9 +1,19 @@
+"""
+Industry-ready Streamlit app for blockchain-backed credit risk verification.
+Features: New verification, history with tx_hash storage, SHAP explanations, CSV export, blockchain/ledger recording.
+Requirements: Install dependencies, configure .env, and ensure model/contract files exist.
+"""
+
 import os
 import json
 import hashlib
 import sqlite3
+import logging
+import re
 from datetime import datetime
+from functools import lru_cache
 from typing import Dict, Any, Tuple, Optional, List
+from contextlib import contextmanager
 
 import joblib
 import pandas as pd
@@ -11,742 +21,766 @@ import numpy as np
 import streamlit as st
 
 # Plotting & explainability
-import matplotlib.pyplot as plt
 try:
+    import matplotlib.pyplot as plt
     import shap
     SHAP_AVAILABLE = True
 except ImportError:
     SHAP_AVAILABLE = False
 
-# Web3 for blockchain
+# Web3
 try:
     from web3 import Web3
-    from web3.middleware import geth_poa_middleware
+    from web3.exceptions import Web3Exception
     WEB3_AVAILABLE = True
 except ImportError:
     WEB3_AVAILABLE = False
+
+# Dotenv for secure configuration
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
 
 # -------------------- Configuration & Paths --------------------
 DATA_DIR = "data"
 MODELS_DIR = "models"
 CONTRACTS_DIR = "contracts"
-os.makedirs(DATA_DIR, exist_ok=True)
-os.makedirs(MODELS_DIR, exist_ok=True)
-os.makedirs(CONTRACTS_DIR, exist_ok=True)
+LOG_FILE = os.path.join(DATA_DIR, "app.log")
+
+# Create directories
+for directory in [DATA_DIR, MODELS_DIR, CONTRACTS_DIR]:
+    os.makedirs(directory, exist_ok=True)
 
 DB_PATH = os.path.join(DATA_DIR, "verification_results.db")
 LEDGER_PATH = os.path.join(CONTRACTS_DIR, "ledger.json")
 FEATURE_COLUMNS_FILE = os.path.join(MODELS_DIR, "feature_columns.pkl")
-MODEL_FILE = os.path.join(MODELS_DIR, "model.pkl")
+CALIBRATED_MODEL_FILE = os.path.join(MODELS_DIR, "calibration_model.pkl")
+BASE_MODEL_FILE = os.path.join(MODELS_DIR, "trained_lgbm_model.pkl")
 
-# -------------------- DB Initialization --------------------
+# Setup logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler(LOG_FILE),
+        logging.StreamHandler()
+    ]
+)
+
+# -------------------- Dependency Check --------------------
+def check_dependencies():
+    """Verify all required files and dependencies."""
+    required_files = [
+        (FEATURE_COLUMNS_FILE, "Feature columns file missing. Run train.py."),
+        (CALIBRATED_MODEL_FILE, "Calibrated model missing. Run train.py."),
+        (BASE_MODEL_FILE, "Base model missing. Run train.py for SHAP explanations.")
+    ]
+    for file_path, error_msg in required_files:
+        if not os.path.exists(file_path):
+            logging.error(error_msg)
+            st.error(error_msg)
+            st.stop()
+
+    if not WEB3_AVAILABLE:
+        logging.warning("web3.py not installed. Using JSON ledger fallback.")
+    if not SHAP_AVAILABLE:
+        logging.warning("SHAP not installed. Explanations will be disabled.")
+
+# -------------------- Database Management --------------------
+@contextmanager
+def get_db_connection():
+    """Context manager for SQLite connection with pooling."""
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    try:
+        yield conn
+    finally:
+        conn.close()
+
 def init_db():
-    """Initialize the SQLite database."""
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS verification_results (
-            applicant_id TEXT PRIMARY KEY,
-            applicant_name TEXT,
-            applicant_email TEXT,
-            age INTEGER,
-            data_hash TEXT,
-            risk_score INTEGER,
-            probability_of_default REAL,
-            risk_category TEXT,
-            timestamp TEXT,
-            tx_hash TEXT
-        )
-    """)
-    conn.commit()
-    conn.close()
+    """Initialize SQLite database with indexes."""
+    with get_db_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS verification_results (
+                applicant_id TEXT PRIMARY KEY,
+                applicant_name TEXT,
+                applicant_email TEXT,
+                age INTEGER,
+                data_hash TEXT,
+                risk_score INTEGER,
+                probability_of_default REAL,
+                risk_category TEXT,
+                timestamp TEXT,
+                tx_hash TEXT
+            )
+        """)
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_applicant_id ON verification_results (applicant_id)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_timestamp ON verification_results (timestamp)")
+        conn.commit()
+    logging.info("Database initialized.")
 
 init_db()
 
-# -------------------- Utility: Data Hashing --------------------
+# -------------------- Utility Functions --------------------
 def generate_data_hash(data: Dict[str, Any]) -> str:
-    """Generate SHA-256 hash of applicant data."""
+    """Generate SHA-256 hash of applicant data, excluding transient fields."""
     data_copy = dict(data)
     for transient in ("submission_timestamp", "timestamp"):
         data_copy.pop(transient, None)
     canonical = json.dumps(data_copy, sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
+def validate_input(applicant_id: str, applicant_name: str, applicant_email: str, 
+                   annual_income: float, loan_amount: float, num_defaults: int, num_previous_loans: int) -> bool:
+    """Validate user inputs."""
+    if not applicant_id or not re.match(r"^[a-zA-Z0-9_-]{1,50}$", applicant_id):
+        st.error("Applicant ID must be 1-50 alphanumeric characters with underscores or hyphens.")
+        return False
+    if not applicant_name or not re.match(r"^[a-zA-Z\s]{1,100}$", applicant_name):
+        st.error("Full name must be 1-100 letters and spaces.")
+        return False
+    if not applicant_email or not re.match(r"[^@]+@[^@]+\.[^@]+", applicant_email):
+        st.error("Valid email is required.")
+        return False
+    if annual_income < 0 or loan_amount < 0:
+        st.error("Income and loan amount must be non-negative.")
+        return False
+    if num_defaults > num_previous_loans:
+        st.error("Number of defaults cannot exceed number of previous loans.")
+        return False
+    return True
+
 # -------------------- Preprocessing --------------------
 EMPLOYMENT_MAPPING = {'employed': 0, 'self-employed': 1, 'unemployed': 2, 'student': 3}
 EDUCATION_MAPPING = {'High School': 0, 'Diploma': 1, 'Bachelor': 2, 'Master': 3, 'PhD': 4}
 LOAN_PURPOSE_MAPPING = {'Business': 0, 'Crypto-Backed': 1, 'Car Loan': 2, 'Education': 3, 'Home Loan': 4}
 
-def preprocess_inference_data(input_data: Dict[str, Any]) -> pd.DataFrame:
-    """Preprocess input data for model prediction."""
-    df = pd.DataFrame([input_data])
-    
-    # Map categorical variables
-    df['employment_status'] = df['employment_status'].map(EMPLOYMENT_MAPPING).fillna(0).astype(int)
-    df['education_level'] = df['education_level'].map(EDUCATION_MAPPING).fillna(0).astype(int)
-    df['loan_purpose'] = df['loan_purpose'].map(LOAN_PURPOSE_MAPPING).fillna(0).astype(int)
-    df['collateral_present'] = df['collateral_present'].map({'Yes': 1, 'No': 0}).fillna(0).astype(int)
-    
-    # Engineered features
+@st.cache_data
+def preprocess_inference_data(input_data: Any) -> pd.DataFrame:
+    """Preprocess input data for model inference."""
+    if isinstance(input_data, dict):
+        df = pd.DataFrame([input_data])
+    else:
+        df = input_data.copy()
+
+    df['employment_status'] = df.get('employment_status', pd.Series()).map(EMPLOYMENT_MAPPING).fillna(0).astype(int)
+    df['education_level'] = df.get('education_level', pd.Series()).map(EDUCATION_MAPPING).fillna(0).astype(int)
+    df['loan_purpose'] = df.get('loan_purpose', pd.Series()).map(LOAN_PURPOSE_MAPPING).fillna(0).astype(int)
+    df['collateral_present'] = df.get('collateral_present', pd.Series()).map({'Yes': 1, 'No': 0}).fillna(0).astype(int)
+
+    if 'annual_income' not in df.columns:
+        df['annual_income'] = 0
+    if 'loan_amount' not in df.columns:
+        df['loan_amount'] = 0
+    if 'num_previous_loans' not in df.columns:
+        df['num_previous_loans'] = 0
+    if 'credit_history_length' not in df.columns:
+        df['credit_history_length'] = 0
+    if 'num_defaults' not in df.columns:
+        df['num_defaults'] = 0
+
     df['income_to_loan_ratio'] = df['annual_income'] / (df['loan_amount'] + 1)
     df['credit_utilization'] = df['num_previous_loans'] / (df['credit_history_length'] + 1)
     df['default_rate'] = df['num_defaults'] / (df['num_previous_loans'] + 1)
-    
-    # Ensure all expected features are present
-    expected_features = [
-        'age', 'annual_income', 'employment_status', 'education_level', 
-        'credit_history_length', 'num_previous_loans', 'num_defaults', 
-        'current_credit_score', 'loan_amount', 'loan_term_months', 
-        'loan_purpose', 'collateral_present', 'identity_verified_on_chain',
-        'transaction_consistency_score', 'fraud_alert_flag', 
-        'on_chain_credit_history', 'income_to_loan_ratio', 
-        'credit_utilization', 'default_rate'
-    ]
-    
-    for feature in expected_features:
-        if feature not in df.columns:
-            df[feature] = 0
-    
-    return df[expected_features]
+
+    numeric_cols = df.select_dtypes(include=["number"]).columns.tolist()
+    for c in numeric_cols:
+        df[c] = pd.to_numeric(df[c], errors='coerce')
+        median = df[c].median() if not df[c].isnull().all() else 0
+        df[c] = df[c].fillna(median)
+
+    if not os.path.exists(FEATURE_COLUMNS_FILE):
+        raise FileNotFoundError(f"Feature columns file not found: {FEATURE_COLUMNS_FILE}")
+
+    feature_columns: List[str] = joblib.load(FEATURE_COLUMNS_FILE)
+    for col in feature_columns:
+        if col not in df.columns:
+            df[col] = 0
+
+    return df[feature_columns]
 
 # -------------------- Model Loading --------------------
 @st.cache_resource
-def load_model():
-    """Load the trained model or create a demo model if not available."""
+def load_models() -> Tuple[Optional[object], Optional[List[str]]]:
+    """Load trained model and feature columns."""
     try:
-        if os.path.exists(MODEL_FILE):
-            return joblib.load(MODEL_FILE)
-        else:
-            # Create a simple demo model
-            from sklearn.ensemble import RandomForestClassifier
-            from sklearn.datasets import make_classification
-            
-            X, y = make_classification(n_samples=1000, n_features=19, n_informative=10, random_state=42)
-            model = RandomForestClassifier(n_estimators=10, random_state=42)
-            model.fit(X, y)
-            
-            # Save demo model
-            joblib.dump(model, MODEL_FILE)
-            return model
+        model = joblib.load(CALIBRATED_MODEL_FILE)
+        feature_columns = joblib.load(FEATURE_COLUMNS_FILE)
+        logging.info("Models loaded successfully.")
+        return model, feature_columns
     except Exception as e:
-        st.error(f"Error loading model: {e}")
+        logging.error(f"Model loading failed: {e}")
+        return None, None
+
+@st.cache_resource
+def load_base_model():
+    """Load base model for SHAP explanations."""
+    try:
+        model = joblib.load(BASE_MODEL_FILE)
+        logging.info("Base model loaded successfully.")
+        return model
+    except Exception as e:
+        logging.error(f"Base model loading failed: {e}")
         return None
 
-# -------------------- Prediction --------------------
-def predict_default(input_dict: Dict[str, Any]) -> Tuple[float, int, str, pd.DataFrame]:
-    """Predict probability of default."""
-    model = load_model()
+# -------------------- Prediction Helpers --------------------
+def predict_single(input_dict: dict) -> Tuple[float, int, str, pd.DataFrame]:
+    """Predict risk for a single applicant."""
+    logging.info(f"Starting prediction for applicant_id: {input_dict['applicant_id']}")
+    model, feature_columns = load_models()
     if model is None:
-        return 0.5, 500, "Medium Risk", pd.DataFrame()
-    
+        logging.error("Calibrated model not found")
+        raise RuntimeError("Calibrated model not found. Run train.py first.")
     processed = preprocess_inference_data(input_dict)
-    
-    # Predict probability
     try:
-        proba = float(model.predict_proba(processed)[0, 1])
-    except Exception:
-        # Fallback calculation for demo purposes
-        proba = min(0.95, max(0.05, 
-            (input_dict['num_defaults'] * 0.2 + 
-             (850 - input_dict['current_credit_score']) / 1000 +
-             (input_dict['loan_amount'] / input_dict['annual_income']) * 0.3)
-        ))
-    
-    # Calculate risk score (0-1000, higher is better)
+        proba = float(model.predict_proba(processed)[:, 1][0])
+    except Exception as e:
+        logging.error(f"Model prediction failed: {e}")
+        raise RuntimeError(f"Model prediction failed: {e}")
     risk_score = int(round((1 - proba) * 1000))
-    
-    # Determine risk category
-    if proba < 0.2:
+    if proba < 0.1:
         category = "Very Low Risk"
-    elif proba < 0.4:
+    elif proba < 0.2:
         category = "Low Risk"
-    elif proba < 0.6:
+    elif proba < 0.4:
         category = "Medium Risk"
-    elif proba < 0.8:
+    elif proba < 0.6:
         category = "High Risk"
     else:
         category = "Very High Risk"
-    
+    logging.info(f"Prediction completed: score={risk_score}, category={category}")
     return proba, risk_score, category, processed
 
-# -------------------- SHAP Explanation --------------------
-def explain_prediction_shap(input_df: pd.DataFrame):
-    """Generate SHAP explanation for the prediction."""
-    if not SHAP_AVAILABLE:
-        return None
-    
-    model = load_model()
+def predict_batch(df: pd.DataFrame) -> pd.DataFrame:
+    """Predict risk for a batch of applicants."""
+    model, feature_columns = load_models()
     if model is None:
-        return None
+        raise RuntimeError("Calibrated model not found. Run train.py first.")
+    processed = preprocess_inference_data(df)
+    probs = model.predict_proba(processed)[:, 1]
+    scores = np.round((1 - probs) * 1000).astype(int)
+    def cat(p):
+        if p < 0.1: return "Very Low Risk"
+        if p < 0.2: return "Low Risk"
+        if p < 0.4: return "Medium Risk"
+        if p < 0.6: return "High Risk"
+        return "Very High Risk"
+    cats = [cat(p) for p in probs]
+    return pd.DataFrame({"probability_of_default": probs, "risk_score": scores, "risk_category": cats}, index=df.index)
+
+# -------------------- SHAP Helpers --------------------
+def get_base_model_for_shap(model):
+    """Extract base model for SHAP explanations."""
+    if hasattr(model, "base_estimator"):
+        return model.base_estimator
+    elif hasattr(model, "calibrated_classifiers_"):
+        cal = model.calibrated_classifiers_[0]
+        return getattr(cal, "estimator", model)
+    return model
+
+@lru_cache(maxsize=1)
+def get_shap_explainer(model, background_df: Optional[tuple] = None, nsample: int = 100):
+    """Create cached SHAP explainer."""
+    if not SHAP_AVAILABLE:
+        raise RuntimeError("SHAP is not installed.")
     
+    # Convert tuple back to DataFrame if cached
+    if background_df is not None:
+        background_df = pd.DataFrame(background_df[0], columns=background_df[1])
+    
+    base = get_base_model_for_shap(model)
+    if background_df is not None and len(background_df) > 0:
+        if len(background_df) < nsample:
+            logging.warning(f"Background dataset too small ({len(background_df)} rows).")
+            background = background_df
+        else:
+            background = background_df.sample(nsample, random_state=42)
+        try:
+            explainer = shap.TreeExplainer(base, data=background, feature_perturbation="tree_path_dependent")
+        except Exception as e:
+            logging.warning(f"TreeExplainer failed: {e}. Using KernelExplainer.")
+            explainer = shap.KernelExplainer(base.predict_proba, background)
+    else:
+        try:
+            explainer = shap.TreeExplainer(base, feature_perturbation="tree_path_dependent")
+        except Exception as e:
+            logging.error(f"SHAP explainer creation failed: {e}")
+            raise RuntimeError(f"SHAP explainer creation failed: {e}")
+    return explainer
+
+def explain_prediction_sampled(model, input_df: pd.DataFrame, background_df: Optional[pd.DataFrame] = None, nsample: int = 100):
+    """Generate SHAP explanations with memory safety."""
+    # Convert DataFrame to tuple for caching
+    bg_tuple = None if background_df is None else (background_df.values, background_df.columns.tolist())
+    explainer = get_shap_explainer(model, bg_tuple, nsample)
     try:
-        # Create a TreeExplainer
-        explainer = shap.TreeExplainer(model)
-        shap_values = explainer.shap_values(input_df)
-        
-        # For binary classification, we take the values for class 1
-        if isinstance(shap_values, list):
-            shap_values = shap_values[1]
-        
-        # Create summary plot
-        fig, ax = plt.subplots(figsize=(10, 8))
-        shap.summary_plot(shap_values, input_df, show=False)
-        plt.tight_layout()
-        return fig
+        shap_vals = explainer.shap_values(input_df)
+        if isinstance(shap_vals, list):
+            shap_vals = shap_vals[1]
+        return explainer, shap_vals
     except Exception as e:
-        st.error(f"SHAP explanation error: {e}")
-        return None
+        logging.error(f"SHAP value calculation failed: {e}")
+        raise RuntimeError(f"SHAP value calculation failed: {e}")
+
+def plot_shap_decision(explainer, shap_values, features: pd.DataFrame, index: int = 0):
+    """Plot SHAP decision plot."""
+    fig, ax = plt.subplots(figsize=(10, 6))
+    try:
+        expected = explainer.expected_value
+        if isinstance(expected, (list, tuple)):
+            expected = expected[1] if len(expected) > 1 else expected[0]
+        shap.decision_plot(expected, shap_values, features.iloc[index], show=False)
+    except Exception:
+        try:
+            shap.summary_plot(shap_values, features, show=False)
+        except Exception:
+            plt.text(0.1, 0.5, "SHAP plotting failed", fontsize=12)
+    plt.tight_layout()
+    return fig
 
 # -------------------- Blockchain Manager --------------------
 class BlockchainManager:
     def __init__(self):
-        self.provider_url = os.getenv("WEB3_PROVIDER_URL", "https://mainnet.infura.io/v3/your-project-id")
+        self.provider_url = os.getenv("WEB3_PROVIDER_URL", "http://127.0.0.1:8545")
         self.account_address = os.getenv("ACCOUNT_ADDRESS", "")
         self.private_key = os.getenv("PRIVATE_KEY", "")
         self.contract_address = os.getenv("CONTRACT_ADDRESS", "")
         self.contract_abi_path = os.path.join(CONTRACTS_DIR, "VerificationContract.json")
-        self.w3 = None
+        self.w3: Optional[Web3] = None
         self.contract = None
-        
+        self.max_retries = 3
+
         if WEB3_AVAILABLE:
-            self.setup_web3()
-    
-    def setup_web3(self):
-        """Set up Web3 connection."""
-        try:
-            self.w3 = Web3(Web3.HTTPProvider(self.provider_url))
-            
-            # Add middleware for POA chains if needed
             try:
-                self.w3.middleware_onion.inject(geth_poa_middleware, layer=0)
-            except Exception:
-                pass
-            
-            # Load contract if available
-            if self.contract_address and os.path.exists(self.contract_abi_path):
-                with open(self.contract_abi_path, "r") as f:
-                    abi = json.load(f)
-                self.contract = self.w3.eth.contract(address=self.contract_address, abi=abi)
-        except Exception as e:
-            st.error(f"Web3 setup error: {e}")
-    
-    def is_connected(self):
-        """Check if connected to blockchain."""
-        return self.w3 and self.w3.is_connected() if self.w3 else False
-    
-    def record_verification(self, applicant_id: str, data_hash: str, 
-                           risk_score: int, risk_category: str, 
-                           probability_of_default: float) -> str:
-        """Record verification on blockchain or local ledger."""
-        # Try blockchain first
-        if self.is_connected() and self.contract and self.account_address and self.private_key:
-            try:
-                # Convert probability to integer (scale by 10000)
-                prob_int = int(probability_of_default * 10000)
-                
-                # Build transaction
-                nonce = self.w3.eth.get_transaction_count(self.account_address)
-                txn = self.contract.functions.storeVerification(
-                    applicant_id, data_hash, risk_score, risk_category, prob_int
-                ).build_transaction({
-                    "from": self.account_address,
-                    "nonce": nonce,
-                    "gas": 300000,
-                    "gasPrice": self.w3.eth.gas_price
-                })
-                
-                # Sign and send transaction
-                signed_txn = self.w3.eth.account.sign_transaction(txn, self.private_key)
-                tx_hash = self.w3.eth.send_raw_transaction(signed_txn.rawTransaction)
-                
-                # Wait for receipt
-                receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
-                if receipt.status == 1:
-                    return tx_hash.hex()
-                else:
-                    return "TX_FAILED"
+                self.w3 = Web3(Web3.HTTPProvider(self.provider_url))
+                if not self.w3.is_connected():
+                    raise Web3Exception("Web3 provider not connected")
+                if self.contract_address and os.path.exists(self.contract_abi_path):
+                    with open(self.contract_abi_path, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                        abi = data.get("abi") or data
+                    self.contract = self.w3.eth.contract(address=self.contract_address, abi=abi)
+                logging.info("Blockchain manager initialized.")
             except Exception as e:
-                error_msg = f"Blockchain error: {str(e)}"
-                st.error(error_msg)
-                # Fall through to local ledger
-        
-        # Local JSON ledger fallback
-        return self.record_local(applicant_id, data_hash, risk_score, risk_category, probability_of_default)
-    
-    def record_local(self, applicant_id: str, data_hash: str, 
-                    risk_score: int, risk_category: str, 
-                    probability_of_default: float) -> str:
-        """Record verification in local JSON ledger."""
+                logging.warning(f"Web3 initialization failed: {e}")
+                self.w3 = None
+                self.contract = None
+
+    def is_connected(self) -> bool:
+        """Check blockchain connectivity."""
+        if self.w3:
+            try:
+                return self.w3.is_connected()
+            except Exception:
+                return False
+        return True  # JSON ledger fallback
+
+    def record_verification(self, applicant_id: str, data_hash: str, risk_score: int, 
+                            risk_category: str, probability_of_default: float) -> str:
+        """Record verification on blockchain or JSON ledger."""
+        logging.info(f"Recording verification for applicant_id: {applicant_id}")
+        if self.w3 and self.contract and self.account_address and self.private_key:
+            for attempt in range(self.max_retries):
+                try:
+                    prob_int = int(max(0.0, min(1.0, probability_of_default)) * 10000)
+                    nonce = self.w3.eth.get_transaction_count(self.account_address)
+                    fn_candidates = [
+                        ("storeVerificationResult", (applicant_id, data_hash, int(risk_score), risk_category, prob_int)),
+                        ("storeVerification", (applicant_id, int(risk_score), risk_category, data_hash)),
+                    ]
+                    for fn_name, args in fn_candidates:
+                        try:
+                            fn = getattr(self.contract.functions, fn_name)
+                            gas_estimate = fn(*args).estimate_gas({"from": self.account_address})
+                            txn = fn(*args).build_transaction({
+                                "from": self.account_address,
+                                "nonce": nonce,
+                                "gas": gas_estimate + 10000,
+                                "gasPrice": self.w3.eth.gas_price
+                            })
+                            signed = self.w3.eth.account.sign_transaction(txn, private_key=self.private_key)
+                            tx_hash = self.w3.eth.send_raw_transaction(signed.rawTransaction)
+                            receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash, timeout=300)
+                            logging.info(f"Blockchain transaction successful: {receipt.transactionHash.hex()}")
+                            return receipt.transactionHash.hex()
+                        except Exception as e:
+                            logging.warning(f"Transaction attempt {attempt + 1} for {fn_name} failed: {e}")
+                            continue
+                except Web3Exception as e:
+                    logging.error(f"Blockchain storage failed on attempt {attempt + 1}: {e}")
+                    if attempt == self.max_retries - 1:
+                        break
+                    continue
+
+        # JSON ledger fallback
         entry = {
             "applicant_id": applicant_id,
             "data_hash": data_hash,
-            "risk_score": risk_score,
+            "risk_score": int(risk_score),
             "risk_category": risk_category,
-            "probability_of_default": probability_of_default,
+            "probability_of_default": float(probability_of_default),
             "timestamp": datetime.utcnow().isoformat(),
-            "stored_locally": True
+            "ledger_hash": hashlib.sha256(json.dumps({
+                "applicant_id": applicant_id,
+                "data_hash": data_hash,
+                "risk_score": int(risk_score)
+            }, sort_keys=True).encode()).hexdigest()
         }
-        
         ledger = []
         if os.path.exists(LEDGER_PATH):
             try:
-                with open(LEDGER_PATH, "r") as f:
+                with open(LEDGER_PATH, "r", encoding="utf-8") as f:
                     ledger = json.load(f)
             except Exception:
                 ledger = []
-        
         ledger.append(entry)
-        
         try:
-            with open(LEDGER_PATH, "w") as f:
+            with open(LEDGER_PATH, "w", encoding="utf-8") as f:
                 json.dump(ledger, f, indent=2)
+            logging.info("Stored in JSON ledger")
             return "LOCAL_LEDGER_OK"
         except Exception as e:
-            return f"LOCAL_ERROR: {str(e)}"
-    
+            logging.error(f"JSON ledger storage failed: {e}")
+            return f"Error: {str(e)}"
+
     def get_verification(self, applicant_id: str) -> Dict[str, Any]:
-        """Get verification from blockchain or local ledger."""
-        # Try blockchain first
-        if self.is_connected() and self.contract:
+        """Retrieve verification from blockchain or JSON ledger."""
+        logging.info(f"Fetching verification for applicant_id: {applicant_id}")
+        if self.w3 and self.contract:
             try:
-                result = self.contract.functions.getVerification(applicant_id).call()
-                # Convert back from stored format
-                return {
-                    "applicant_id": result[0],
-                    "data_hash": result[1],
-                    "risk_score": result[2],
-                    "risk_category": result[3],
-                    "probability_of_default": result[4] / 10000.0,
-                    "stored_on_chain": True
-                }
-            except Exception:
-                # Fall through to local ledger
-                pass
-        
-        # Check local ledger
+                fn_candidates = ["getVerificationResult", "getVerification"]
+                for fn_name in fn_candidates:
+                    try:
+                        fn = getattr(self.contract.functions, fn_name)
+                        res = fn(applicant_id).call()
+                        return {
+                            "data_hash": res[0],
+                            "risk_score": res[1],
+                            "risk_category": res[2],
+                            "probability_of_default": float(res[3]) / 10000.0 if len(res) > 3 else None,
+                            "timestamp": res[4] if len(res) > 4 else None
+                        }
+                    except Exception:
+                        continue
+            except Web3Exception as e:
+                logging.warning(f"Blockchain retrieval failed: {e}")
+
         if os.path.exists(LEDGER_PATH):
             try:
-                with open(LEDGER_PATH, "r") as f:
+                with open(LEDGER_PATH, "r", encoding="utf-8") as f:
                     ledger = json.load(f)
-                
-                for entry in ledger:
+                for entry in reversed(ledger):
                     if entry.get("applicant_id") == applicant_id:
-                        return entry
-            except Exception:
-                pass
-        
-        return {"error": "Verification not found"}
+                        expected_hash = hashlib.sha256(json.dumps({
+                            "applicant_id": entry["applicant_id"],
+                            "data_hash": entry["data_hash"],
+                            "risk_score": entry["risk_score"]
+                        }, sort_keys=True).encode()).hexdigest()
+                        if expected_hash == entry.get("ledger_hash"):
+                            return entry
+                        else:
+                            logging.error("Ledger entry corrupted")
+                            return {"error": "Ledger entry corrupted"}
+            except Exception as e:
+                logging.error(f"Ledger read failed: {e}")
+                return {"error": f"Ledger read failed: {e}"}
+        return {"error": "Not found"}
 
-# -------------------- Database Operations --------------------
-def save_to_db(applicant_id: str, applicant_name: str, applicant_email: str, 
-               age: int, data_hash: str, risk_score: int, 
-               probability_of_default: float, risk_category: str, 
-               timestamp: str, tx_hash: str):
-    """Save verification result to database."""
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        cur = conn.cursor()
-        cur.execute("""
-            INSERT OR REPLACE INTO verification_results 
-            (applicant_id, applicant_name, applicant_email, age, data_hash, 
-             risk_score, probability_of_default, risk_category, timestamp, tx_hash)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (applicant_id, applicant_name, applicant_email, age, data_hash,
-              risk_score, probability_of_default, risk_category, timestamp, tx_hash))
-        conn.commit()
-        conn.close()
-        return True
-    except Exception as e:
-        st.error(f"Database error: {e}")
-        return False
-
-def load_from_db():
-    """Load all verification results from database."""
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        df = pd.read_sql_query("SELECT * FROM verification_results ORDER BY timestamp DESC", conn)
-        conn.close()
-        return df
-    except Exception as e:
-        st.error(f"Database load error: {e}")
-        return pd.DataFrame()
+# Cached blockchain manager
+@st.cache_resource
+def get_blockchain_manager() -> BlockchainManager:
+    return BlockchainManager()
 
 # -------------------- Streamlit UI --------------------
-def main():
-    # Initialize session state
-    if 'verification_results' not in st.session_state:
-        st.session_state.verification_results = {}
-    if 'blockchain_manager' not in st.session_state:
-        st.session_state.blockchain_manager = BlockchainManager()
-    
-    # Page configuration
-    st.set_page_config(
-        page_title="Credit Risk Verification",
-        layout="wide",
-        page_icon="🔒",
-        initial_sidebar_state="expanded"
-    )
-    
-    # Custom CSS
-    st.markdown("""
-        <style>
-        .main-header {
-            font-size: 2.5rem;
-            color: #1f77b4;
-            text-align: center;
-            margin-bottom: 1.5rem;
-        }
-        .risk-low {
-            color: #2ecc71;
-            font-weight: bold;
-        }
-        .risk-medium {
-            color: #f39c12;
-            font-weight: bold;
-        }
-        .risk-high {
-            color: #e74c3c;
-            font-weight: bold;
-        }
-        .metric-card {
-            background-color: #f8f9fa;
-            border-radius: 0.5rem;
-            padding: 1rem;
-            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-            margin-bottom: 1rem;
-        }
-        .history-item {
-            border-left: 4px solid #1f77b4;
-            padding-left: 1rem;
-            margin-bottom: 1rem;
-        }
-        </style>
-    """, unsafe_allow_html=True)
-    
-    # Header
-    st.markdown("<h1 class='main-header'> Credit Risk Verification</h1>", unsafe_allow_html=True)
-    
-    # Sidebar navigation
-    menu = st.sidebar.selectbox(
-        "Navigation",
-        ["New Verification", "Verification History", "Blockchain Status", "Model Info"]
-    )
-    
-    # Get blockchain manager
-    bm = st.session_state.blockchain_manager
-    
-    # ---------- New Verification Page ----------
-    if menu == "New Verification":
-        st.header("📝 New Credit Risk Verification")
-        
-        # Blockchain status
-        if bm.is_connected():
-            st.success("Connected to Blockchain")
-        else:
-            st.warning("Using Local Storage (Blockchain not connected)")
-        
-        with st.form("verification_form"):
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                st.subheader("Applicant Information")
-                applicant_id = st.text_input("Applicant ID*", help="Unique identifier for the applicant")
-                applicant_name = st.text_input("Full Name*")
-                applicant_email = st.text_input("Email Address*")
-                age = st.slider("Age", 18, 100, 30)
-                annual_income = st.number_input("Annual Income ($)", min_value=0, value=50000, step=1000)
-                employment_status = st.selectbox("Employment Status", ["employed", "self-employed", "unemployed", "student"])
-                education_level = st.selectbox("Education Level", ["High School", "Diploma", "Bachelor", "Master", "PhD"])
-                credit_history_length = st.slider("Credit History (years)", 0, 30, 5)
-            
-            with col2:
-                st.subheader("Loan Information")
-                num_previous_loans = st.slider("Number of Previous Loans", 0, 20, 2)
-                num_defaults = st.slider("Number of Defaults", 0, 10, 0)
-                current_credit_score = st.slider("Current Credit Score", 300, 850, 650)
-                loan_amount = st.number_input("Loan Amount ($)", min_value=0, value=25000, step=1000)
-                loan_term_months = st.slider("Loan Term (months)", 12, 84, 36)
-                loan_purpose = st.selectbox("Loan Purpose", ["Business", "Crypto-Backed", "Car Loan", "Education", "Home Loan"])
-                collateral_present = st.radio("Collateral Present", ["Yes", "No"])
-            
-            st.subheader("Blockchain Indicators")
-            col3, col4 = st.columns(2)
-            with col3:
-                identity_verified_on_chain = st.radio("Identity Verified on Chain", [1, 0], format_func=lambda x: "Yes" if x == 1 else "No")
-            with col4:
-                on_chain_credit_history = st.slider("On-Chain Credit History", 0, 10, 5)
-            
-            # Add missing fields with default values
-            transaction_consistency_score = 0.8
-            fraud_alert_flag = 0
-            
-            submitted = st.form_submit_button("Run Verification")
-        
-        if submitted:
-            # Validate required fields
-            if not all([applicant_id, applicant_name, applicant_email]):
-                st.error("Please fill in all required fields (marked with *)")
-            else:
-                # Create application data
-                application = {
-                    "applicant_id": applicant_id,
-                    "applicant_name": applicant_name,
-                    "applicant_email": applicant_email,
-                    "age": age,
-                    "annual_income": annual_income,
-                    "employment_status": employment_status,
-                    "education_level": education_level,
-                    "credit_history_length": credit_history_length,
-                    "num_previous_loans": num_previous_loans,
-                    "num_defaults": num_defaults,
-                    "current_credit_score": current_credit_score,
-                    "loan_amount": loan_amount,
-                    "loan_term_months": loan_term_months,
-                    "loan_purpose": loan_purpose,
-                    "collateral_present": collateral_present,
-                    "identity_verified_on_chain": identity_verified_on_chain,
-                    "on_chain_credit_history": on_chain_credit_history,
-                    "transaction_consistency_score": transaction_consistency_score,
-                    "fraud_alert_flag": fraud_alert_flag,
-                    "submission_timestamp": datetime.utcnow().isoformat()
-                }
-                
-                # Generate data hash
-                data_hash = generate_data_hash(application)
-                
-                # Run prediction
-                with st.spinner("Calculating risk assessment..."):
-                    proba, score, category, processed = predict_default(application)
-                
-                # Display results
-                st.success("Risk assessment completed!")
-                
-                # Results in columns
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    st.metric("Risk Score", f"{score}/1000")
-                with col2:
-                    st.metric("Probability of Default", f"{proba:.2%}")
-                with col3:
-                    # Color code based on risk
-                    if "Low" in category:
-                        st.markdown(f"<p class='risk-low'>Risk Category: {category}</p>", unsafe_allow_html=True)
-                    elif "Medium" in category:
-                        st.markdown(f"<p class='risk-medium'>Risk Category: {category}</p>", unsafe_allow_html=True)
-                    else:
-                        st.markdown(f"<p class='risk-high'>Risk Category: {category}</p>", unsafe_allow_html=True)
-                
-                st.markdown(f"**Data Hash:** `{data_hash[:16]}...`")
-                
-                # SHAP explanation
-                if SHAP_AVAILABLE:
-                    with st.expander("View Explanation (SHAP)"):
-                        shap_fig = explain_prediction_shap(processed)
-                        if shap_fig:
-                            st.pyplot(shap_fig)
-                        else:
-                            st.info("SHAP explanation not available for this prediction.")
-                else:
-                    st.info("Install SHAP package for model explanations.")
-                
-                # Save options
-                st.subheader("Save Results")
-                save_col1, save_col2 = st.columns(2)
-                
-                with save_col1:
-                    if st.button("💾 Save to Database", use_container_width=True):
-                        timestamp = datetime.utcnow().isoformat()
-                        if save_to_db(applicant_id, applicant_name, applicant_email, age, 
-                                     data_hash, score, proba, category, timestamp, ""):
-                            st.success("Results saved to database!")
-                        else:
-                            st.error("Failed to save to database.")
-                
-                with save_col2:
-                    if st.button("🔗 Save to Blockchain", use_container_width=True):
-                        with st.spinner("Saving to blockchain..."):
-                            tx_hash = bm.record_verification(applicant_id, data_hash, score, category, proba)
-                            
-                            if tx_hash.startswith("0x"):
-                                # Update database with tx hash
-                                timestamp = datetime.utcnow().isoformat()
-                                save_to_db(applicant_id, applicant_name, applicant_email, age, 
-                                          data_hash, score, proba, category, timestamp, tx_hash)
-                                st.success(f"Saved to blockchain! Transaction: {tx_hash[:16]}...")
-                            elif tx_hash == "LOCAL_LEDGER_OK":
-                                timestamp = datetime.utcnow().isoformat()
-                                save_to_db(applicant_id, applicant_name, applicant_email, age, 
-                                          data_hash, score, proba, category, timestamp, "LOCAL")
-                                st.info("📝 Saved to local ledger (blockchain not available)")
-                            else:
-                                st.error(f"Failed to save: {tx_hash}")
-    
-    # ---------- Verification History ----------
-    elif menu == "Verification History":
-        st.header("Verification History")
-        conn = sqlite3.connect(DB_PATH)
-        try:
-            df = pd.read_sql_query("SELECT * FROM verification_results ORDER BY timestamp DESC", conn)
-        finally:
-            conn.close()
+st.set_page_config(page_title="Credit Risk Verification", layout="wide", page_icon="🔒")
+st.markdown("<h1 style='text-align:center;'>🔒 Blockchain-Backed Credit Risk Verification System</h1>", unsafe_allow_html=True)
 
-        if df.empty:
-            st.info("No verification records yet. Run 'New Verification' to add.")
-        else:
-            # normalize col types
-            df['probability_of_default'] = pd.to_numeric(df['probability_of_default'], errors='coerce')
+# Check dependencies on startup
+check_dependencies()
 
-            # pretty cards
-            st.markdown("### Summary Cards")
-            for idx, row in df.iterrows():
-                cat = row.get('risk_category') or "Unknown"
-                score = row.get('risk_score') if row.get('risk_score') is not None else ""
-                proba = row.get('probability_of_default')
-                if pd.isna(proba):
-                    proba_str = ""
-                else:
-                    proba_str = f"{float(proba):.2%}"
+# Initialize session state
+if 'blockchain_manager' not in st.session_state:
+    st.session_state.blockchain_manager = get_blockchain_manager()
 
-                applicant_label = f"{row.get('applicant_name') or ''} ({row.get('applicant_id')})"
-                data_hash = row.get("data_hash") or "N/A"
+menu = st.sidebar.selectbox("Navigation", ["New Verification", "Verification History", "Data Insights", "Blockchain Status", "Model Info"])
 
-                # color selection
-                if "Very Low" in cat or "Low" in cat:
-                    bg = "#1e7e34"  # green
-                elif "Medium" in cat:
-                    bg = "#f1c40f"  # yellow
-                elif "High" in cat:
-                    bg = "#e67e22"  # orange
-                elif "Very High" in cat:
-                    bg = "#c0392b"  # red
-                else:
-                    bg = "#7f8c8d"  # gray
-
-                st.markdown(
-                    f"""
-                    <div style="background:{bg}; padding:12px; border-radius:10px; color:white; margin-bottom:8px;">
-                        <strong style="font-size:16px;">{applicant_label}</strong><br>
-                        <span>Risk Score: {score} &nbsp; | &nbsp; Probability: {proba_str} &nbsp; | &nbsp; Category: {cat}</span><br>
-                        <small>Data Hash: {data_hash}</small><br>
-                        <small>Timestamp: {row.get('timestamp')}</small>
-                    </div>
-                    """, unsafe_allow_html=True
-                )
-
-            st.markdown("### Full Table")
-            # show table including hash
-            display_df = df.copy()
-            display_df['probability_of_default'] = display_df['probability_of_default'].apply(
-                lambda x: f"{float(x):.2%}" if pd.notnull(x) else ""
-            )
-
-            st.dataframe(
-                display_df[['applicant_id','applicant_name','risk_score','risk_category',
-                            'probability_of_default','data_hash','timestamp','tx_hash']],
-                use_container_width=True
-            )
-
-            # CSV export
-            csv = display_df.to_csv(index=False).encode("utf-8")
-            st.download_button("📥 Download CSV of History", csv, "verification_history.csv", "text/csv")
-
-            # select & verify on-chain/ledger if tx exists
-            ids_with_tx = display_df[display_df['tx_hash'].notnull()]['applicant_id'].tolist()
-            if ids_with_tx:
-                st.markdown("### Verify Stored Record")
-                selected_id = st.selectbox("Select applicant ID with a tx", ids_with_tx)
-                if st.button("Fetch verification from chain/ledger"):
-                    bm = st.session_state.blockchain_manager
-                    res = bm.get_verification(selected_id)
-                    if 'error' in res:
-                        st.error("Verification not found on chain/ledger.")
-                    else:
-                        st.success("Record retrieved")
-                        st.json(res)
-    
-    # ---------- Blockchain Status Page ----------
-    elif menu == "Blockchain Status":
-        st.header("🔗 Blockchain Status")
-        
-        bm = st.session_state.blockchain_manager
-        
+# ---------- New Verification ----------
+if menu == "New Verification":
+    st.header("New Credit Risk Verification")
+    with st.form("verification_form", clear_on_submit=False):
         col1, col2 = st.columns(2)
-        
         with col1:
-            st.subheader("Connection")
-            st.write(f"**Provider:** {bm.provider_url}")
-            
-            if bm.is_connected():
-                st.success("Connected to Blockchain")
-                try:
-                    block_number = bm.w3.eth.block_number
-                    st.write(f"**Latest Block:** {block_number}")
-                except Exception as e:
-                    st.error(f"Error retrieving blockchain data: {e}")
-            else:
-                st.error("Not connected to Blockchain")
-        
+            applicant_id = st.text_input("Applicant ID", help="Unique identifier")
+            applicant_name = st.text_input("Full name")
+            applicant_email = st.text_input("Email")
+            age = st.slider("Age", 18, 100, 30)
+            annual_income = st.number_input("Annual Income ($)", min_value=0, value=50000, step=1000)
+            employment_status = st.selectbox("Employment Status", ["employed", "self-employed", "unemployed", "student"])
+            education_level = st.selectbox("Education Level", ["High School", "Diploma", "Bachelor", "Master", "PhD"])
+            credit_history_length = st.slider("Credit history (years)", 0, 30, 5)
         with col2:
-            st.subheader("Contract")
-            if bm.contract_address:
-                st.write(f"**Address:** {bm.contract_address}")
+            num_previous_loans = st.slider("Number of previous loans", 0, 20, 2)
+            num_defaults = st.slider("Number of defaults", 0, 10, 0)
+            avg_payment_delay_days = st.slider("Avg payment delay (days)", 0, 60, 5)
+            current_credit_score = st.slider("Current credit score", 300, 850, 650)
+            loan_amount = st.number_input("Loan amount ($)", min_value=0, value=25000, step=1000)
+            loan_term_months = st.slider("Loan term (months)", 12, 84, 36)
+            loan_purpose = st.selectbox("Loan purpose", ["Business", "Crypto-Backed", "Car Loan", "Education", "Home Loan"])
+            collateral_present = st.radio("Collateral present", ["Yes", "No"])
+
+        st.markdown("**Blockchain & Fraud indicators**")
+        col3, col4 = st.columns(2)
+        with col3:
+            identity_verified_on_chain = st.radio("Identity verified on chain", [1, 0], format_func=lambda x: "Yes" if x == 1 else "No")
+            fraud_alert_flag = st.radio("Fraud alert flag", [0, 1], format_func=lambda x: "Yes" if x == 1 else "No")
+        with col4:
+            transaction_consistency_score = st.slider("Transaction consistency", 0.0, 1.0, 0.8)
+            on_chain_credit_history = st.slider("On-chain credit history", 0, 10, 5)
+
+        submitted = st.form_submit_button("Run Verification")
+
+    if submitted:
+        if not validate_input(applicant_id, applicant_name, applicant_email, annual_income, loan_amount, num_defaults, num_previous_loans):
+            st.stop()
+
+        application = {
+            "applicant_id": applicant_id,
+            "applicant_name": hashlib.sha256(applicant_name.encode()).hexdigest(),
+            "applicant_email": hashlib.sha256(applicant_email.encode()).hexdigest(),
+            "age": int(age),
+            "annual_income": float(annual_income),
+            "employment_status": employment_status,
+            "education_level": education_level,
+            "credit_history_length": int(credit_history_length),
+            "num_previous_loans": int(num_previous_loans),
+            "num_defaults": int(num_defaults),
+            "avg_payment_delay_days": int(avg_payment_delay_days),
+            "current_credit_score": int(current_credit_score),
+            "loan_amount": float(loan_amount),
+            "loan_term_months": int(loan_term_months),
+            "loan_purpose": loan_purpose,
+            "collateral_present": collateral_present,
+            "identity_verified_on_chain": int(identity_verified_on_chain),
+            "transaction_consistency_score": float(transaction_consistency_score),
+            "fraud_alert_flag": int(fraud_alert_flag),
+            "on_chain_credit_history": int(on_chain_credit_history),
+            "submission_timestamp": datetime.utcnow().isoformat()
+        }
+
+        data_hash = generate_data_hash(application)
+        try:
+            with get_db_connection() as conn:
+                conn.execute("BEGIN TRANSACTION")
+                cur = conn.cursor()
+                cur.execute("""
+                    INSERT OR REPLACE INTO verification_results
+                    (applicant_id, applicant_name, applicant_email, age, data_hash, risk_score, probability_of_default, risk_category, timestamp, tx_hash)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (application['applicant_id'], application['applicant_name'], application['applicant_email'], application['age'],
+                      data_hash, None, None, None, application['submission_timestamp'], None))
+                conn.commit()
+
+                proba, score, category, processed = predict_single(application)
                 
-                if bm.contract and bm.is_connected():
-                    try:
-                        st.success("Contract is accessible")
-                    except Exception as e:
-                        st.error(f"Contract error: {e}")
-                else:
-                    st.warning("Contract not loaded")
-            else:
-                st.info("No contract address configured")
-        
-        # Test connection button
-        if st.button("Test Connection"):
-            if bm.is_connected():
-                st.success("Blockchain connection successful!")
-            else:
-                st.error("Could not connect to blockchain")
-    
-    # ---------- Model Info Page ----------
-    elif menu == "Model Info":
-        st.header("Model Information")
-        
-        model = load_model()
-        if model:
-            st.subheader("Model Details")
-            st.write(f"**Model Type:** {type(model).__name__}")
-            
-            if hasattr(model, 'feature_importances_'):
-                st.subheader("Feature Importances")
+                cur.execute("""
+                    UPDATE verification_results
+                    SET risk_score = ?, probability_of_default = ?, risk_category = ?
+                    WHERE applicant_id = ?
+                """, (score, proba, category, application['applicant_id']))
+                conn.commit()
+        except FileNotFoundError as e:
+            st.error(str(e))
+            logging.error(str(e))
+            st.stop()
+        except Exception as e:
+            st.error(f"Operation failed: {e}")
+            logging.error(f"Operation failed: {e}")
+            st.stop()
+
+        st.markdown("### Result")
+        c1, c2, c3 = st.columns([1,1,1])
+        c1.metric("Risk Score", score)
+        c2.metric("Probability of Default", f"{proba:.2%}")
+        c3.metric("Risk Category", category)
+        st.markdown(f"**Data Hash:** `{data_hash[:12]}...`")
+
+        if SHAP_AVAILABLE:
+            with st.expander("View SHAP explanation (sampled)"):
+                sample_csv = os.path.join(DATA_DIR, "sample_dataset.csv")
+                bg = pd.read_csv(sample_csv) if os.path.exists(sample_csv) else None
                 try:
-                    # Get feature names
-                    feature_names = [
-                        'age', 'annual_income', 'employment_status', 'education_level', 
-                        'credit_history_length', 'num_previous_loans', 'num_defaults', 
-                        'current_credit_score', 'loan_amount', 'loan_term_months', 
-                        'loan_purpose', 'collateral_present', 'identity_verified_on_chain',
-                        'transaction_consistency_score', 'fraud_alert_flag', 
-                        'on_chain_credit_history', 'income_to_loan_ratio', 
-                        'credit_utilization', 'default_rate'
-                    ]
-                    
-                    # Create feature importance chart
-                    importances = model.feature_importances_
-                    indices = np.argsort(importances)[::-1]
-                    
-                    fig, ax = plt.subplots(figsize=(10, 8))
-                    ax.set_title("Feature Importances")
-                    ax.barh(range(len(indices)), importances[indices], align="center")
-                    ax.set_yticks(range(len(indices)))
-                    ax.set_yticklabels([feature_names[i] for i in indices])
-                    ax.invert_yaxis()
-                    plt.tight_layout()
+                    model = load_models()[0]
+                    explainer, shap_vals = explain_prediction_sampled(model, processed, background_df=bg, nsample=100)
+                    fig = plot_shap_decision(explainer, shap_vals, processed, index=0)
                     st.pyplot(fig)
                 except Exception as e:
-                    st.error(f"Could not generate feature importance chart: {e}")
+                    st.warning(f"SHAP explanation not available: {e}")
+                    logging.warning(f"SHAP explanation failed: {e}")
         else:
-            st.error("Model not available")
+            st.info("SHAP not installed — install shap for explanations.")
+
+        bm = st.session_state.blockchain_manager
+        if st.button("Store immutably (blockchain/ledger)"):
+            with st.spinner("Storing verification..."):
+                tx = bm.record_verification(applicant_id, data_hash, score, category, proba)
+                if isinstance(tx, str) and (tx.startswith("0x") or tx == "LOCAL_LEDGER_OK"):
+                    with get_db_connection() as conn:
+                        cur = conn.cursor()
+                        cur.execute("UPDATE verification_results SET tx_hash = ? WHERE applicant_id = ?", (tx, applicant_id))
+                        conn.commit()
+                    st.success(f"Stored with transaction hash: {tx}")
+                else:
+                    st.error(f"Storage failed: {tx}")
+
+# ---------- Verification History ----------
+elif menu == "Verification History":
+    st.header("Verification History")
+    with get_db_connection() as conn:
+        df = pd.read_sql_query("SELECT * FROM verification_results ORDER BY timestamp DESC", conn)
+
+    if df.empty:
+        st.info("No verification records yet. Run 'New Verification' to add.")
+    else:
+        df['probability_of_default'] = pd.to_numeric(df['probability_of_default'], errors='coerce')
+
+        st.markdown("### Summary Cards")
+        for idx, row in df.iterrows():
+            cat = row.get('risk_category') or "Unknown"
+            score = row.get('risk_score') if row.get('risk_score') is not None else ""
+            proba = row.get('probability_of_default')
+            proba_str = f"{float(proba):.2%}" if pd.notnull(proba) else ""
+            applicant_label = f"{row.get('applicant_name') or ''} ({row.get('applicant_id')})"
+            data_hash = row.get("data_hash") or "N/A"
+            tx_hash = row.get("tx_hash") or "N/A"
+            
+            display_data_hash = data_hash[:12] + "..." if len(data_hash) > 12 else data_hash
+            display_tx_hash = tx_hash[:12] + "..." if tx_hash and len(tx_hash) > 12 else tx_hash
+
+            if "Very Low" in cat or "Low" in cat:
+                bg = "#1e7e34"
+            elif "Medium" in cat:
+                bg = "#f1c40f"
+            elif "High" in cat:
+                bg = "#e67e22"
+            elif "Very High" in cat:
+                bg = "#c0392b"
+            else:
+                bg = "#7f8c8d"
+
+            st.markdown(
+                f"""
+                <div style="background:{bg}; padding:12px; border-radius:10px; color:white; margin-bottom:8px;">
+                    <strong style="font-size:16px;">{applicant_label}</strong><br>
+                    <span>Risk Score: {score} &nbsp; | &nbsp; Probability: {proba_str} &nbsp; | &nbsp; Category: {cat}</span><br>
+                    <small>Data Hash: {display_data_hash}</small><br>
+                    <small>Tx Hash: {display_tx_hash}</small><br>
+                    <small>Timestamp: {row.get('timestamp')}</small>
+                </div>
+                """, unsafe_allow_html=True
+            )
+
+        st.markdown("### Full Table")
+        display_df = df.copy()
+        display_df['probability_of_default'] = display_df['probability_of_default'].apply(
+            lambda x: f"{float(x):.2%}" if pd.notnull(x) else ""
+        )
+        display_df['data_hash'] = display_df['data_hash'].apply(lambda x: x[:12] + "..." if x and len(x) > 12 else x)
+        display_df['tx_hash'] = display_df['tx_hash'].apply(lambda x: x[:12] + "..." if x and len(x) > 12 else x)
+
+        st.dataframe(
+            display_df[['applicant_id', 'applicant_name', 'risk_score', 'risk_category',
+                        'probability_of_default', 'data_hash', 'timestamp', 'tx_hash']],
+            use_container_width=True
+        )
+
+        st.markdown("### Export Options")
+        export_cols = st.multiselect(
+            "Select columns to export",
+            options=df.columns.tolist(),
+            default=['applicant_id', 'risk_score', 'risk_category', 'probability_of_default', 'data_hash', 'timestamp', 'tx_hash']
+        )
+        csv = df[export_cols].to_csv(index=False).encode("utf-8")
+        st.download_button("📥 Download CSV of History", csv, "verification_history.csv", "text/csv")
+
+        ids_with_tx = df[df['tx_hash'].notnull()]['applicant_id'].tolist()
+        if ids_with_tx:
+            st.markdown("### Verify Stored Record")
+            selected_id = st.selectbox("Select applicant ID with a tx", ids_with_tx)
+            if st.button("Fetch verification from chain/ledger"):
+                bm = st.session_state.blockchain_manager
+                res = bm.get_verification(selected_id)
+                if 'error' in res:
+                    st.error(res['error'])
+                else:
+                    db_row = df[df['applicant_id'] == selected_id].iloc[0]
+                    if res['data_hash'] == db_row['data_hash'] and res['risk_score'] == db_row['risk_score']:
+                        st.success("Record verified: matches blockchain/ledger.")
+                    else:
+                        st.error("Verification mismatch between database and blockchain/ledger.")
+                    st.json(res)
+
+# ---------- Data Insights ----------
+elif menu == "Data Insights":
+    st.header("Data Insights")
+    sample_csv = os.path.join(DATA_DIR, "sample_dataset.csv")
+    if os.path.exists(sample_csv):
+        try:
+            df_sample = pd.read_csv(sample_csv)
+            st.metric("Total Records", len(df_sample))
+            st.metric("Default Rate", f"{df_sample['default_flag'].mean():.2%}" if 'default_flag' in df_sample.columns else "N/A")
+            st.subheader("Credit Score Distribution")
+            fig, ax = plt.subplots()
+            df_sample['current_credit_score'].hist(bins=30, ax=ax)
+            ax.set_xlabel("Credit Score")
+            ax.set_ylabel("Count")
+            st.pyplot(fig)
+        except Exception as e:
+            st.error(f"Could not load sample dataset: {e}")
+            logging.error(f"Sample dataset loading failed: {e}")
+    else:
+        st.info("Sample dataset not found. Run train.py to generate one.")
+
+# ---------- Blockchain Status ----------
+elif menu == "Blockchain Status":
+    st.header("Blockchain Status")
+    bm = st.session_state.blockchain_manager
+    st.write("Provider URL:", bm.provider_url)
+    connected = bm.is_connected()
+    st.write("Connected:", connected)
+    if connected and WEB3_AVAILABLE and bm.w3:
+        try:
+            st.write("Chain ID:", bm.w3.eth.chain_id)
+            if bm.account_address:
+                bal = bm.w3.eth.get_balance(bm.account_address)
+                st.write("Account balance (ETH):", bm.w3.from_wei(bal, "ether"))
+        except Exception as e:
+            st.warning(f"Could not query chain details: {e}")
+            logging.warning(f"Chain details query failed: {e}")
+    else:
+        st.info("Using JSON ledger fallback (no web3 or contract configured).")
+
+# ---------- Model Info ----------
+elif menu == "Model Info":
+    st.header("Model Information")
+    model, feat_cols = load_models()
+    if model is None:
+        st.info("No trained/calibrated model found. Run train.py first.")
+    else:
+        st.success("Model loaded")
+        st.write("Feature columns (count = %d):" % len(feat_cols))
+        st.write(feat_cols)
+        base = load_base_model()
+        if base is not None and hasattr(base, "feature_importances_"):
+            try:
+                fi = getattr(base, "feature_importances_")
+                fi_df = pd.DataFrame({"feature": feat_cols, "importance": fi}).sort_values("importance", ascending=False).head(30)
+                st.subheader("Top feature importances")
+                st.bar_chart(fi_df.set_index("feature")["importance"])
+            except Exception as e:
+                st.warning(f"Feature importance plotting failed: {e}")
+                logging.warning(f"Feature importance plotting failed: {e}")
 
 if __name__ == "__main__":
     main()
