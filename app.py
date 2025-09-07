@@ -560,9 +560,9 @@ if menu == "New Verification":
                             processed,
                             background_df=bg,
                             nsample=100
-                         )
-                         fig = plot_shap_decision(explainer, shap_vals, processed, index=0)
-                         st.pyplot(fig)
+                        )
+                        fig = plot_shap_decision(explainer, shap_vals, processed, index=0)
+                        st.pyplot(fig)
                     except Exception as e:
                         st.warning(f"SHAP explanation not available: {e}")
             else:
