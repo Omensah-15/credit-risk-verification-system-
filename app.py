@@ -223,23 +223,44 @@ def get_base_model_for_shap(model):
 def explain_prediction_sampled(model, input_df: pd.DataFrame, background_df: Optional[pd.DataFrame] = None, nsample: int = 100):
     """
     Returns (explainer, shap_values) with memory-safe background sampling.
+    Works with tree-based or non-tree models.
     """
     if not SHAP_AVAILABLE:
         raise RuntimeError("shap is not installed or failed to import.")
-    
-    base = get_base_model_for_shap(model)
 
-    # sample background if available
+    # get base model if calibrated
+    if hasattr(model, "calibrated_classifiers_"):
+        base = model.calibrated_classifiers_[0].base_estimator
+    else:
+        base = model
+
+    # sample background
     if background_df is not None and len(background_df) > 0:
         background = background_df.sample(min(nsample, len(background_df)))
-        explainer = shap.TreeExplainer(base, data=background)
     else:
-        explainer = shap.TreeExplainer(base)
+        background = None
 
-    shap_vals = explainer.shap_values(input_df)
-    if isinstance(shap_vals, list):
-        shap_vals = shap_vals[1] if len(shap_vals) > 1 else shap_vals[0]
+    # select proper TreeExplainer config
+    try:
+        if background is not None:
+            explainer = shap.TreeExplainer(base, data=background, feature_perturbation="tree_path_dependent")
+        else:
+            explainer = shap.TreeExplainer(base, feature_perturbation="tree_path_dependent")
+        shap_vals = explainer.shap_values(input_df)
+        if isinstance(shap_vals, list):
+            shap_vals = shap_vals[1]
+    except Exception as e:
+        # fallback to KernelExplainer for non-tree models
+        if background is not None:
+            explainer = shap.KernelExplainer(base.predict_proba, background)
+            shap_vals = explainer.shap_values(input_df)
+            if isinstance(shap_vals, list):
+                shap_vals = shap_vals[1]
+        else:
+            raise RuntimeError(f"SHAP explanation failed: {e}")
+
     return explainer, shap_vals
+
 
 def plot_shap_decision(explainer, shap_values, features: pd.DataFrame, index: int = 0):
     fig, ax = plt.subplots(figsize=(10, 6))
@@ -531,10 +552,17 @@ if menu == "New Verification":
                             bg = pd.read_csv(sample_csv)
                         except Exception:
                             bg = None
-                    try:
-                        explainer, shap_vals = explain_prediction_sampled(load_models()[0], processed, background_df=bg, nsample=100)
-                        fig = plot_shap_decision(explainer, shap_vals, processed, index=0)
-                        st.pyplot(fig)
+                   try:
+            model = load_models()[0]  # get your trained model
+            # explain prediction safely
+            explainer, shap_vals = explain_prediction_sampled(
+                model,
+                processed,
+                background_df=bg,
+                nsample=100
+            )
+            fig = plot_shap_decision(explainer, shap_vals, processed, index=0)
+            st.pyplot(fig)
                     except Exception as e:
                         st.warning(f"SHAP explanation not available: {e}")
             else:
