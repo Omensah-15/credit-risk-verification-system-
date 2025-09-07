@@ -557,6 +557,7 @@ elif menu == "Verification History" or menu == "Verification History".replace(" 
     else:
         # normalize col types
         df['probability_of_default'] = pd.to_numeric(df['probability_of_default'], errors='coerce')
+
         # pretty cards
         st.markdown("### Summary Cards")
         for idx, row in df.iterrows():
@@ -569,6 +570,7 @@ elif menu == "Verification History" or menu == "Verification History".replace(" 
                 proba_str = f"{float(proba):.2%}"
 
             applicant_label = f"{row.get('applicant_name') or ''} ({row.get('applicant_id')})"
+            data_hash = row.get("data_hash") or "N/A"
 
             # color selection
             if "Very Low" in cat or "Low" in cat:
@@ -587,16 +589,24 @@ elif menu == "Verification History" or menu == "Verification History".replace(" 
                 <div style="background:{bg}; padding:12px; border-radius:10px; color:white; margin-bottom:8px;">
                     <strong style="font-size:16px;">{applicant_label}</strong><br>
                     <span>Risk Score: {score} &nbsp; | &nbsp; Probability: {proba_str} &nbsp; | &nbsp; Category: {cat}</span><br>
+                    <small>Data Hash: {data_hash}</small><br>
                     <small>Timestamp: {row.get('timestamp')}</small>
                 </div>
                 """, unsafe_allow_html=True
             )
 
         st.markdown("### Full Table")
-        # show table
+        # show table including hash
         display_df = df.copy()
-        display_df['probability_of_default'] = display_df['probability_of_default'].apply(lambda x: f"{float(x):.2%}" if pd.notnull(x) else "")
-        st.dataframe(display_df[['applicant_id','applicant_name','risk_score','risk_category','probability_of_default','timestamp','tx_hash']], use_container_width=True)
+        display_df['probability_of_default'] = display_df['probability_of_default'].apply(
+            lambda x: f"{float(x):.2%}" if pd.notnull(x) else ""
+        )
+
+        st.dataframe(
+            display_df[['applicant_id','applicant_name','risk_score','risk_category',
+                        'probability_of_default','data_hash','timestamp','tx_hash']],
+            use_container_width=True
+        )
 
         # CSV export
         csv = display_df.to_csv(index=False).encode("utf-8")
