@@ -22,6 +22,7 @@ except Exception:
 # web3
 try:
     from web3 import Web3
+    from web3.middleware import geth_poa_middleware
     WEB3_AVAILABLE = True
 except Exception:
     WEB3_AVAILABLE = False
@@ -104,8 +105,8 @@ def preprocess_inference_data(input_data) -> pd.DataFrame:
     # Safe mapping (if column missing, create it)
     df['employment_status'] = df.get('employment_status', pd.Series()).map(EMPLOYMENT_MAPPING).fillna(0).astype(int)
     df['education_level'] = df.get('education_level', pd.Series()).map(EDUCATION_MAPPING).fillna(0).astype(int)
-    df['loan_purpose'] = df.get('loan_purpose', pd.Series()).map(LOAN_PURPOSE_MAPPING).fillna(0).astype(int)
-    df['collateral_present'] = df.get('collateral_present', pd.Series()).map({'Yes': 1, 'No': 0}).fillna(0).astype(int)
+    df['loan_purpose'] = df.get('loan_purpose', pd.Series()).map(LOAN_PURPOSE_MAPPING).fillna(0).astize(int)
+    df['collateral_present'] = df.get('collateral_present', pd.Series()).map({'Yes': 1, 'No': 0}).fillna(0).astize(int)
 
     # engineered features
     # provide defaults if columns missing
@@ -209,15 +210,11 @@ def get_base_model_for_shap(model):
     Safely extract the underlying model for SHAP.
     Works with CalibratedClassifierCV or normal models.
     """
-    # normal scikit-learn model
-    if hasattr(model, "base_estimator"):
-        return model.base_estimator
-    # CalibratedClassifierCV
-    elif hasattr(model, "calibrated_classifiers_"):
-        # try to access underlying estimator of first class
-        cal = model.calibrated_classifiers_[0]
-        return getattr(cal, "estimator", model)  # fallback to model itself
-    # fallback: just use model
+    # For CalibratedClassifierCV, extract the base estimator
+    if hasattr(model, "calibrated_classifiers_"):
+        # Access the base estimator from the first calibrated classifier
+        return model.calibrated_classifiers_[0].estimator
+    # For normal models, just return the model
     return model
 
 def explain_prediction_sampled(model, input_df: pd.DataFrame, background_df: Optional[pd.DataFrame] = None, nsample: int = 100):
@@ -228,31 +225,28 @@ def explain_prediction_sampled(model, input_df: pd.DataFrame, background_df: Opt
     if not SHAP_AVAILABLE:
         raise RuntimeError("shap is not installed or failed to import.")
 
-    # get base model if calibrated
-    if hasattr(model, "calibrated_classifiers_"):
-        base = model.calibrated_classifiers_[0].base_estimator
-    else:
-        base = model
-
-    # sample background
+    # Get base model for SHAP explanation
+    base_model = get_base_model_for_shap(model)
+    
+    # Sample background
     if background_df is not None and len(background_df) > 0:
         background = background_df.sample(min(nsample, len(background_df)))
     else:
         background = None
 
-    # select proper TreeExplainer config
+    # Select proper TreeExplainer config
     try:
         if background is not None:
-            explainer = shap.TreeExplainer(base, data=background, feature_perturbation="tree_path_dependent")
+            explainer = shap.TreeExplainer(base_model, data=background, feature_perturbation="tree_path_dependent")
         else:
-            explainer = shap.TreeExplainer(base, feature_perturbation="tree_path_dependent")
+            explainer = shap.TreeExplainer(base_model, feature_perturbation="tree_path_dependent")
         shap_vals = explainer.shap_values(input_df)
         if isinstance(shap_vals, list):
             shap_vals = shap_vals[1]
     except Exception as e:
         # fallback to KernelExplainer for non-tree models
         if background is not None:
-            explainer = shap.KernelExplainer(base.predict_proba, background)
+            explainer = shap.KernelExplainer(base_model.predict_proba, background)
             shap_vals = explainer.shap_values(input_df)
             if isinstance(shap_vals, list):
                 shap_vals = shap_vals[1]
@@ -281,7 +275,7 @@ def plot_shap_decision(explainer, shap_values, features: pd.DataFrame, index: in
 class BlockchainManager:
     def __init__(self):
         # config from env or defaults
-        self.provider_url = os.getenv("WEB3_PROVIDER_URL", "http://127.0.0.1:8545")
+        self.provider_url = os.getenv("WEB3_PROVIDER_URL", "https://mainnet.infura.io/v3/your-project-id")
         self.account_address = os.getenv("ACCOUNT_ADDRESS", "")
         self.private_key = os.getenv("PRIVATE_KEY", "")
         self.contract_address = os.getenv("CONTRACT_ADDRESS", "")
@@ -292,12 +286,20 @@ class BlockchainManager:
         if WEB3_AVAILABLE:
             try:
                 self.w3 = Web3(Web3.HTTPProvider(self.provider_url))
+                
+                # Add middleware for POA chains if needed
+                try:
+                    self.w3.middleware_onion.inject(geth_poa_middleware, layer=0)
+                except Exception:
+                    pass
+                
                 if self.contract_address and os.path.exists(self.contract_abi_path):
                     with open(self.contract_abi_path, "r", encoding="utf-8") as f:
                         data = json.load(f)
                         abi = data.get("abi") or data
                     self.contract = self.w3.eth.contract(address=self.contract_address, abi=abi)
-            except Exception:
+            except Exception as e:
+                st.error(f"Web3 connection error: {e}")
                 self.w3 = None
                 self.contract = None
 
@@ -307,8 +309,7 @@ class BlockchainManager:
                 return self.w3.is_connected()
             except Exception:
                 return False
-        # fallback: consider JSON ledger available
-        return True
+        return False
 
     def record_verification(self, applicant_id: str, data_hash: str, risk_score: int, risk_category: str, probability_of_default: float) -> str:
         """
@@ -318,41 +319,54 @@ class BlockchainManager:
         # try on-chain if we have contract + keys
         if self.w3 and self.contract and self.account_address and self.private_key:
             try:
-                prob_int = int(max(0.0, min(1.0, probability_of_default)) * 10000)
+                # Convert probability to integer (scale by 10000 to preserve decimals)
+                prob_int = int(probability_of_default * 10000)
+                
+                # Get nonce
                 nonce = self.w3.eth.get_transaction_count(self.account_address)
-                # Try function names used in different examples
-                fn_candidates = [
-                    ("storeVerificationResult", (applicant_id, data_hash, int(risk_score), risk_category, prob_int)),
-                    ("storeVerification", (applicant_id, int(risk_score), risk_category, data_hash)),
-                ]
-                # find a callable function
-                for fn_name, args in fn_candidates:
-                    try:
-                        fn = getattr(self.contract.functions, fn_name)
-                        txn = fn(*args).build_transaction({
-                            "from": self.account_address,
-                            "nonce": nonce,
-                            "gas": 300000,
-                            "gasPrice": self.w3.eth.gas_price
-                        })
-                        signed = self.w3.eth.account.sign_transaction(txn, private_key=self.private_key)
-                        tx_hash = self.w3.eth.send_raw_transaction(signed.rawTransaction)
-                        receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash)
-                        return receipt.transactionHash.hex()
-                    except Exception:
-                        continue
-            except Exception:
+                
+                # Build transaction
+                txn = self.contract.functions.storeVerification(
+                    applicant_id, 
+                    data_hash, 
+                    int(risk_score), 
+                    risk_category, 
+                    prob_int
+                ).build_transaction({
+                    "from": self.account_address,
+                    "nonce": nonce,
+                    "gas": 300000,
+                    "gasPrice": self.w3.eth.gas_price
+                })
+                
+                # Sign transaction
+                signed_txn = self.w3.eth.account.sign_transaction(txn, private_key=self.private_key)
+                
+                # Send transaction
+                tx_hash = self.w3.eth.send_raw_transaction(signed_txn.rawTransaction)
+                
+                # Wait for transaction receipt
+                receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
+                
+                if receipt.status == 1:
+                    return tx_hash.hex()
+                else:
+                    return f"Transaction failed with status {receipt.status}"
+                    
+            except Exception as e:
+                error_msg = f"Blockchain transaction failed: {str(e)}"
+                st.error(error_msg)
                 # Fall through to local ledger
-                pass
 
-        # JSON fallback ledger
+        # JSON fallback ledger (only if blockchain fails)
         entry = {
             "applicant_id": applicant_id,
             "data_hash": data_hash,
             "risk_score": int(risk_score),
             "risk_category": risk_category,
             "probability_of_default": float(probability_of_default),
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": datetime.utcnow().isoformat(),
+            "stored_locally": True
         }
         ledger = []
         if os.path.exists(LEDGER_PATH):
@@ -370,26 +384,24 @@ class BlockchainManager:
             return f"Error: {str(e)}"
 
     def get_verification(self, applicant_id: str) -> Dict[str, Any]:
-        # try on-chain (two candidate functions)
+        # try on-chain first
         if self.w3 and self.contract:
             try:
-                fn_candidates = ["getVerificationResult", "getVerification"]
-                for fn_name in fn_candidates:
-                    try:
-                        fn = getattr(self.contract.functions, fn_name)
-                        res = fn(applicant_id).call()
-                        # many ABIs return tuple: (dataHash, riskScore, category, probInt, timestamp)
-                        return {
-                            "data_hash": res[0],
-                            "risk_score": res[1],
-                            "risk_category": res[2],
-                            "probability_of_default": float(res[3]) / 10000.0 if len(res) > 3 else None,
-                            "timestamp": res[4] if len(res) > 4 else None
-                        }
-                    except Exception:
-                        continue
-            except Exception:
-                pass
+                result = self.contract.functions.getVerification(applicant_id).call()
+                
+                # Parse result based on contract structure
+                # Assuming structure: (dataHash, riskScore, category, probInt, timestamp)
+                return {
+                    "data_hash": result[0],
+                    "risk_score": result[1],
+                    "risk_category": result[2],
+                    "probability_of_default": float(result[3]) / 10000.0,
+                    "timestamp": result[4],
+                    "on_chain": True
+                }
+            except Exception as e:
+                st.warning(f"On-chain retrieval failed: {e}")
+                # Fall through to local ledger
 
         # JSON fallback:
         if os.path.exists(LEDGER_PATH):
@@ -398,9 +410,10 @@ class BlockchainManager:
                     ledger = json.load(f)
                 for entry in reversed(ledger):
                     if entry.get("applicant_id") == applicant_id:
+                        entry["on_chain"] = False
                         return entry
-            except Exception:
-                pass
+            except Exception as e:
+                st.error(f"Ledger read error: {e}")
         return {"error": "Not found"}
 
 # cached blockchain manager
@@ -423,6 +436,14 @@ menu = st.sidebar.selectbox("Navigation", ["New Verification", "Verification His
 # ---------- New Verification ----------
 if menu == "New Verification":
     st.header("New Credit Risk Verification")
+    
+    # Blockchain status indicator
+    bm = st.session_state.blockchain_manager
+    if bm.is_connected():
+        st.success("✅ Connected to Blockchain")
+    else:
+        st.warning("⚠️ Using Local Ledger (Blockchain not connected)")
+    
     with st.form("verification_form", clear_on_submit=False):
         col1, col2 = st.columns(2)
         with col1:
@@ -549,10 +570,11 @@ if menu == "New Verification":
                     sample_csv = os.path.join(DATA_DIR, "sample_dataset.csv")
                     if os.path.exists(sample_csv):
                         try:
-                            bg = pd.read_csv(sample_csv)
+                            bg_df = pd.read_csv(sample_csv)
                             # Preprocess the background data to match the training format
-                            bg = preprocess_inference_data(bg)
-                        except Exception:
+                            bg = preprocess_inference_data(bg_df)
+                        except Exception as e:
+                            st.warning(f"Could not load background data: {e}")
                             bg = None
                     try:
                         model = load_models()[0]  # get your trained model
@@ -572,9 +594,9 @@ if menu == "New Verification":
 
             # Store to blockchain/ledger immediately after prediction
             bm = st.session_state.blockchain_manager
-            with st.spinner("Storing verification..."):
+            with st.spinner("Storing verification on blockchain..."):
                 tx = bm.record_verification(applicant_id, data_hash, score, category, proba)
-                if isinstance(tx, str) and (tx.startswith("0x") or tx == "LOCAL_LEDGER_OK"):
+                if tx.startswith("0x"):
                     # update tx_hash in sqlite
                     try:
                         conn = sqlite3.connect(DB_PATH)
@@ -583,9 +605,18 @@ if menu == "New Verification":
                         conn.commit()
                     finally:
                         conn.close()
-                    st.success(f"Stored: {tx}")
+                    st.success(f"✅ Successfully stored on blockchain: {tx}")
+                elif tx == "LOCAL_LEDGER_OK":
+                    try:
+                        conn = sqlite3.connect(DB_PATH)
+                        cur = conn.cursor()
+                        cur.execute("UPDATE verification_results SET tx_hash = ? WHERE applicant_id = ?", ("LOCAL", applicant_id))
+                        conn.commit()
+                    finally:
+                        conn.close()
+                    st.warning("⚠️ Stored in local ledger (blockchain unavailable)")
                 else:
-                    st.error(f"Storage failed: {tx}")
+                    st.error(f"❌ Storage failed: {tx}")
 
 # ---------- Verification History ----------
 elif menu == "Verification History" or menu == "Verification History".replace(" ", ""):
@@ -629,9 +660,12 @@ elif menu == "Verification History" or menu == "Verification History".replace(" 
             else:
                 bg = "#7f8c8d"  # gray
 
+            # Different border for blockchain vs local storage
+            border_style = "5px solid #27ae60" if tx_hash.startswith("0x") else "5px solid #f39c12" if tx_hash == "LOCAL" else "5px solid #95a5a6"
+            
             st.markdown(
                 f"""
-                <div style="background:{bg}; padding:12px; border-radius:10px; color:white; margin-bottom:8px;">
+                <div style="background:{bg}; padding:12px; border-radius:10px; color:white; margin-bottom:8px; border:{border_style}">
                     <strong style="font-size:16px;">{applicant_label}</strong><br>
                     <span>Risk Score: {score} &nbsp; | &nbsp; Probability: {proba_str} &nbsp; | &nbsp; Category: {cat}</span><br>
                     <small>Data Hash: {data_hash}</small><br>
@@ -696,19 +730,47 @@ elif menu == "Data Insights":
 elif menu == "Blockchain Status":
     st.header("Blockchain Status")
     bm = st.session_state.blockchain_manager
-    st.write("Provider URL:", bm.provider_url)
-    connected = bm.is_connected()
-    st.write("Connected:", connected)
-    if connected and WEB3_AVAILABLE and bm.w3:
-        try:
-            st.write("Chain ID:", bm.w3.eth.chain_id)
-            if bm.account_address:
-                bal = bm.w3.eth.get_balance(bm.account_address)
-                st.write("Account balance (ETH):", bm.w3.from_wei(bal, "ether"))
-        except Exception:
-            st.warning("Could not query chain details.")
-    else:
-        st.info("Using JSON ledger fallback (no web3 or contract configured).")
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        st.write("**Provider URL:**", bm.provider_url)
+        connected = bm.is_connected()
+        status = "✅ Connected" if connected else "❌ Disconnected"
+        st.write("**Connection Status:**", status)
+        
+        if connected and WEB3_AVAILABLE and bm.w3:
+            try:
+                st.write("**Chain ID:**", bm.w3.eth.chain_id)
+                if bm.account_address:
+                    bal = bm.w3.eth.get_balance(bm.account_address)
+                    st.write("**Account balance (ETH):**", bm.w3.from_wei(bal, "ether"))
+            except Exception as e:
+                st.warning(f"Could not query chain details: {e}")
+    
+    with col2:
+        if bm.contract_address:
+            st.write("**Contract Address:**", bm.contract_address)
+        else:
+            st.write("**Contract Address:** Not configured")
+            
+        if bm.account_address:
+            st.write("**Account Address:**", bm.account_address)
+        else:
+            st.write("**Account Address:** Not configured")
+    
+    # Test connection button
+    if st.button("Test Blockchain Connection"):
+        if bm.is_connected():
+            st.success("✅ Blockchain connection successful!")
+            try:
+                block = bm.w3.eth.get_block('latest')
+                st.write(f"Latest block number: {block.number}")
+                st.write(f"Block timestamp: {datetime.fromtimestamp(block.timestamp)}")
+            except Exception as e:
+                st.error(f"Error getting block info: {e}")
+        else:
+            st.error("❌ Could not connect to blockchain")
+            st.info("Make sure to set WEB3_PROVIDER_URL, ACCOUNT_ADDRESS, PRIVATE_KEY, and CONTRACT_ADDRESS in your environment variables")
 
 # ---------- Model Info ----------
 elif menu == "Model Info":
