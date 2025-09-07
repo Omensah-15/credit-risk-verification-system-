@@ -39,29 +39,6 @@ LEDGER_PATH = os.path.join(CONTRACTS_DIR, "ledger.json")
 FEATURE_COLUMNS_FILE = os.path.join(MODELS_DIR, "feature_columns.pkl")
 MODEL_FILE = os.path.join(MODELS_DIR, "model.pkl")
 
-# -------------------- Sample Data for Demo --------------------
-def create_sample_data():
-    """Create sample data for demonstration purposes."""
-    sample_data = {
-        "age": [35, 42, 29, 51, 37],
-        "annual_income": [75000, 52000, 89000, 63000, 71000],
-        "employment_status": ["employed", "self-employed", "employed", "unemployed", "employed"],
-        "education_level": ["Bachelor", "High School", "Master", "Bachelor", "PhD"],
-        "credit_history_length": [7, 3, 5, 12, 9],
-        "num_previous_loans": [2, 1, 4, 3, 2],
-        "num_defaults": [0, 1, 0, 2, 0],
-        "current_credit_score": [720, 650, 780, 600, 750],
-        "loan_amount": [25000, 15000, 35000, 20000, 30000],
-        "loan_term_months": [36, 24, 48, 36, 60],
-        "loan_purpose": ["Home Loan", "Car Loan", "Business", "Education", "Home Loan"],
-        "collateral_present": ["Yes", "No", "Yes", "No", "Yes"],
-        "identity_verified_on_chain": [1, 0, 1, 0, 1],
-        "transaction_consistency_score": [0.9, 0.7, 0.8, 0.6, 0.9],
-        "fraud_alert_flag": [0, 0, 0, 1, 0],
-        "on_chain_credit_history": [5, 2, 7, 1, 6]
-    }
-    return pd.DataFrame(sample_data)
-
 # -------------------- DB Initialization --------------------
 def init_db():
     """Initialize the SQLite database."""
@@ -94,10 +71,6 @@ def generate_data_hash(data: Dict[str, Any]) -> str:
         data_copy.pop(transient, None)
     canonical = json.dumps(data_copy, sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
-
-def verify_data_hash(data: Dict[str, Any], original_hash: str) -> bool:
-    """Verify data against its hash."""
-    return generate_data_hash(data) == original_hash
 
 # -------------------- Preprocessing --------------------
 EMPLOYMENT_MAPPING = {'employed': 0, 'self-employed': 1, 'unemployed': 2, 'student': 3}
@@ -197,14 +170,14 @@ def predict_default(input_dict: Dict[str, Any]) -> Tuple[float, int, str, pd.Dat
     return proba, risk_score, category, processed
 
 # -------------------- SHAP Explanation --------------------
-def explain_prediction(input_df: pd.DataFrame):
+def explain_prediction_shap(input_df: pd.DataFrame):
     """Generate SHAP explanation for the prediction."""
     if not SHAP_AVAILABLE:
-        return None, None
+        return None
     
     model = load_model()
     if model is None:
-        return None, None
+        return None
     
     try:
         # Create a TreeExplainer
@@ -215,17 +188,14 @@ def explain_prediction(input_df: pd.DataFrame):
         if isinstance(shap_values, list):
             shap_values = shap_values[1]
         
-        return explainer, shap_values
+        # Create summary plot
+        fig, ax = plt.subplots(figsize=(10, 8))
+        shap.summary_plot(shap_values, input_df, show=False)
+        plt.tight_layout()
+        return fig
     except Exception as e:
         st.error(f"SHAP explanation error: {e}")
-        return None, None
-
-def plot_shap_summary(explainer, shap_values, features: pd.DataFrame):
-    """Plot SHAP summary plot."""
-    fig, ax = plt.subplots(figsize=(10, 8))
-    shap.summary_plot(shap_values, features, show=False)
-    plt.tight_layout()
-    return fig
+        return None
 
 # -------------------- Blockchain Manager --------------------
 class BlockchainManager:
@@ -333,38 +303,6 @@ class BlockchainManager:
             return "LOCAL_LEDGER_OK"
         except Exception as e:
             return f"LOCAL_ERROR: {str(e)}"
-    
-    def get_verification(self, applicant_id: str) -> Dict[str, Any]:
-        """Get verification record from blockchain or local ledger."""
-        # Try blockchain first
-        if self.is_connected() and self.contract:
-            try:
-                result = self.contract.functions.getVerification(applicant_id).call()
-                return {
-                    "data_hash": result[0],
-                    "risk_score": result[1],
-                    "risk_category": result[2],
-                    "probability_of_default": float(result[3]) / 10000.0,
-                    "timestamp": result[4],
-                    "on_chain": True
-                }
-            except Exception:
-                # Fall through to local ledger
-                pass
-        
-        # Local JSON ledger fallback
-        if os.path.exists(LEDGER_PATH):
-            try:
-                with open(LEDGER_PATH, "r") as f:
-                    ledger = json.load(f)
-                for entry in reversed(ledger):
-                    if entry.get("applicant_id") == applicant_id:
-                        entry["on_chain"] = False
-                        return entry
-            except Exception:
-                pass
-        
-        return {"error": "Not found"}
 
 # -------------------- Database Operations --------------------
 def save_to_db(applicant_id: str, applicant_name: str, applicant_email: str, 
@@ -420,10 +358,10 @@ def main():
     st.markdown("""
         <style>
         .main-header {
-            font-size: 3rem;
+            font-size: 2.5rem;
             color: #1f77b4;
             text-align: center;
-            margin-bottom: 2rem;
+            margin-bottom: 1.5rem;
         }
         .risk-low {
             color: #2ecc71;
@@ -441,18 +379,24 @@ def main():
             background-color: #f8f9fa;
             border-radius: 0.5rem;
             padding: 1rem;
-            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+            margin-bottom: 1rem;
+        }
+        .history-item {
+            border-left: 4px solid #1f77b4;
+            padding-left: 1rem;
+            margin-bottom: 1rem;
         }
         </style>
     """, unsafe_allow_html=True)
     
     # Header
-    st.markdown("<h1 class='main-header'>🔒 Credit Risk Verification System</h1>", unsafe_allow_html=True)
+    st.markdown("<h1 class='main-header'>🔒 Credit Risk Verification</h1>", unsafe_allow_html=True)
     
     # Sidebar navigation
     menu = st.sidebar.selectbox(
         "Navigation",
-        ["New Verification", "Verification History", "Data Insights", "Blockchain Status", "Model Info"]
+        ["New Verification", "Verification History", "Blockchain Status", "Model Info"]
     )
     
     # Get blockchain manager
@@ -486,20 +430,17 @@ def main():
                 st.subheader("Loan Information")
                 num_previous_loans = st.slider("Number of Previous Loans", 0, 20, 2)
                 num_defaults = st.slider("Number of Defaults", 0, 10, 0)
-                avg_payment_delay_days = st.slider("Average Payment Delay (days)", 0, 60, 5)
                 current_credit_score = st.slider("Current Credit Score", 300, 850, 650)
                 loan_amount = st.number_input("Loan Amount ($)", min_value=0, value=25000, step=1000)
                 loan_term_months = st.slider("Loan Term (months)", 12, 84, 36)
                 loan_purpose = st.selectbox("Loan Purpose", ["Business", "Crypto-Backed", "Car Loan", "Education", "Home Loan"])
                 collateral_present = st.radio("Collateral Present", ["Yes", "No"])
             
-            st.subheader("Blockchain & Fraud Indicators")
+            st.subheader("Blockchain Indicators")
             col3, col4 = st.columns(2)
             with col3:
                 identity_verified_on_chain = st.radio("Identity Verified on Chain", [1, 0], format_func=lambda x: "Yes" if x == 1 else "No")
-                fraud_alert_flag = st.radio("Fraud Alert Flag", [0, 1], format_func=lambda x: "Yes" if x == 1 else "No")
             with col4:
-                transaction_consistency_score = st.slider("Transaction Consistency Score", 0.0, 1.0, 0.8)
                 on_chain_credit_history = st.slider("On-Chain Credit History", 0, 10, 5)
             
             submitted = st.form_submit_button("Run Verification")
@@ -521,15 +462,12 @@ def main():
                     "credit_history_length": credit_history_length,
                     "num_previous_loans": num_previous_loans,
                     "num_defaults": num_defaults,
-                    "avg_payment_delay_days": avg_payment_delay_days,
                     "current_credit_score": current_credit_score,
                     "loan_amount": loan_amount,
                     "loan_term_months": loan_term_months,
                     "loan_purpose": loan_purpose,
                     "collateral_present": collateral_present,
                     "identity_verified_on_chain": identity_verified_on_chain,
-                    "transaction_consistency_score": transaction_consistency_score,
-                    "fraud_alert_flag": fraud_alert_flag,
                     "on_chain_credit_history": on_chain_credit_history,
                     "submission_timestamp": datetime.utcnow().isoformat()
                 }
@@ -559,15 +497,14 @@ def main():
                     else:
                         st.markdown(f"<p class='risk-high'>Risk Category: {category}</p>", unsafe_allow_html=True)
                 
-                st.markdown(f"**Data Hash:** `{data_hash}`")
+                st.markdown(f"**Data Hash:** `{data_hash[:16]}...`")
                 
                 # SHAP explanation
                 if SHAP_AVAILABLE:
                     with st.expander("View Explanation (SHAP)"):
-                        explainer, shap_values = explain_prediction(processed)
-                        if explainer and shap_values is not None:
-                            fig = plot_shap_summary(explainer, shap_values, processed)
-                            st.pyplot(fig)
+                        shap_fig = explain_prediction_shap(processed)
+                        if shap_fig:
+                            st.pyplot(shap_fig)
                         else:
                             st.info("SHAP explanation not available for this prediction.")
                 else:
@@ -596,7 +533,7 @@ def main():
                                 timestamp = datetime.utcnow().isoformat()
                                 save_to_db(applicant_id, applicant_name, applicant_email, age, 
                                           data_hash, score, proba, category, timestamp, tx_hash)
-                                st.success(f"✅ Saved to blockchain! Transaction: {tx_hash}")
+                                st.success(f"✅ Saved to blockchain! Transaction: {tx_hash[:16]}...")
                             elif tx_hash == "LOCAL_LEDGER_OK":
                                 timestamp = datetime.utcnow().isoformat()
                                 save_to_db(applicant_id, applicant_name, applicant_email, age, 
@@ -616,7 +553,7 @@ def main():
             st.info("No verification records found. Run a verification first.")
         else:
             # Summary statistics
-            st.subheader("Summary Statistics")
+            st.subheader("Summary")
             col1, col2, col3 = st.columns(3)
             with col1:
                 st.metric("Total Verifications", len(df))
@@ -630,111 +567,56 @@ def main():
                     on_blockchain = 0
                 st.metric("On Blockchain", f"{on_blockchain}/{len(df)}")
             
-            # Filter options
-            st.subheader("Filter Results")
-            filter_col1, filter_col2 = st.columns(2)
+            # Simple filter
+            st.subheader("Filter")
+            risk_filter = st.selectbox(
+                "Risk Category",
+                options=["All"] + list(df['risk_category'].unique()) if 'risk_category' in df.columns else ["All"],
+                index=0
+            )
             
-            with filter_col1:
-                risk_options = df['risk_category'].unique() if 'risk_category' in df.columns else []
-                risk_filter = st.multiselect(
-                    "Risk Category",
-                    options=risk_options,
-                    default=risk_options
-                )
-            
-            with filter_col2:
-                blockchain_filter = st.selectbox(
-                    "Blockchain Status",
-                    options=["All", "On Blockchain", "Local Only"]
-                )
-            
-            # Apply filters
+            # Apply filter
             filtered_df = df.copy()
-            if risk_filter and 'risk_category' in filtered_df.columns:
-                filtered_df = filtered_df[filtered_df['risk_category'].isin(risk_filter)]
+            if risk_filter != "All" and 'risk_category' in filtered_df.columns:
+                filtered_df = filtered_df[filtered_df['risk_category'] == risk_filter]
             
-            if blockchain_filter == "On Blockchain" and 'tx_hash' in filtered_df.columns:
-                filtered_df = filtered_df[filtered_df['tx_hash'].str.startswith('0x', na=False)]
-            elif blockchain_filter == "Local Only" and 'tx_hash' in filtered_df.columns:
-                filtered_df = filtered_df[~filtered_df['tx_hash'].str.startswith('0x', na=False)]
-            
-            # Display results
-            st.subheader("Verification Records")
-            if not filtered_df.empty:
-                for _, row in filtered_df.iterrows():
-                    # Safely get risk category with default value
-                    risk_category = row.get('risk_category', 'Unknown')
-                    
-                    # Determine risk color
-                    risk_class = "risk-medium"
-                    if risk_category and "Low" in risk_category:
-                        risk_class = "risk-low"
-                    elif risk_category and "High" in risk_category:
-                        risk_class = "risk-high"
-                    
-                    # Determine blockchain status
-                    tx_hash = row.get('tx_hash', '')
-                    blockchain_status = "🔗 On Blockchain" if tx_hash and tx_hash.startswith('0x') else "📝 Local Storage"
-                    
-                    with st.container():
-                        st.markdown(f"""
-                            <div class="metric-card">
-                                <h3>{row.get('applicant_name', 'N/A')} ({row.get('applicant_id', 'N/A')})</h3>
-                                <p><b>Risk Score:</b> {row.get('risk_score', 'N/A')}/1000 | 
-                                <b>Probability of Default:</b> {float(row.get('probability_of_default', 0)):.2%} | 
-                                <span class="{risk_class}"><b>Category:</b> {risk_category}</span></p>
-                                <p><b>Data Hash:</b> {row.get('data_hash', 'N/A')[:16]}... | 
-                                <b>Status:</b> {blockchain_status}</p>
-                                <p><b>Timestamp:</b> {row.get('timestamp', 'N/A')}</p>
-                            </div>
-                        """, unsafe_allow_html=True)
-                        
-                        # Action buttons for each record
-                        btn_col1, btn_col2 = st.columns(2)
-                        with btn_col1:
-                            if st.button("View Details", key=f"view_{row['applicant_id']}"):
-                                st.session_state.selected_applicant = row['applicant_id']
-                        with btn_col2:
-                            if st.button("Verify on Blockchain", key=f"verify_{row['applicant_id']}"):
-                                tx_hash = row.get('tx_hash', '')
-                                if not (tx_hash and tx_hash.startswith('0x')):
-                                    # Try to save to blockchain
-                                    with st.spinner("Saving to blockchain..."):
-                                        tx_hash = bm.record_verification(
-                                            row['applicant_id'], 
-                                            row['data_hash'], 
-                                            row['risk_score'], 
-                                            row['risk_category'], 
-                                            row['probability_of_default']
-                                        )
-                                        
-                                        if tx_hash.startswith("0x"):
-                                            # Update database
-                                            save_to_db(
-                                                row['applicant_id'], row['applicant_name'], row['applicant_email'],
-                                                row['age'], row['data_hash'], row['risk_score'],
-                                                row['probability_of_default'], row['risk_category'],
-                                                row['timestamp'], tx_hash
-                                            )
-                                            st.success(f"Saved to blockchain! Transaction: {tx_hash}")
-                                            st.rerun()
-                                        else:
-                                            st.error(f"Failed to save: {tx_hash}")
-                                else:
-                                    st.info("Already on blockchain")
-                        
-                        st.divider()
+            # Display results in a clean, simple way
+            st.subheader("Recent Verifications")
+            for _, row in filtered_df.head(10).iterrows():  # Show only last 10 records
+                # Safely get risk category with default value
+                risk_category = row.get('risk_category', 'Unknown')
                 
-                # Display selected applicant details
-                if 'selected_applicant' in st.session_state:
-                    selected = df[df['applicant_id'] == st.session_state.selected_applicant].iloc[0]
-                    with st.expander("Selected Application Details", expanded=True):
-                        st.json(selected.to_dict())
-            else:
-                st.info("No records match the selected filters.")
+                # Determine risk color
+                risk_class = "risk-medium"
+                if risk_category and "Low" in risk_category:
+                    risk_class = "risk-low"
+                elif risk_category and "High" in risk_category:
+                    risk_class = "risk-high"
+                
+                # Determine blockchain status
+                tx_hash = row.get('tx_hash', '')
+                blockchain_status = "🔗 On Blockchain" if tx_hash and tx_hash.startswith('0x') else "📝 Local Storage"
+                
+                # Display as a clean card
+                with st.container():
+                    st.markdown(f"""
+                        <div class="history-item">
+                            <h4>{row.get('applicant_name', 'N/A')} ({row.get('applicant_id', 'N/A')})</h4>
+                            <p><b>Risk Score:</b> {row.get('risk_score', 'N/A')}/1000 | 
+                            <b>Probability:</b> {float(row.get('probability_of_default', 0)):.2%} | 
+                            <span class="{risk_class}"><b>{risk_category}</b></span></p>
+                            <p><b>Status:</b> {blockchain_status} | 
+                            <b>Date:</b> {pd.to_datetime(row.get('timestamp', 'N/A')).strftime('%Y-%m-%d %H:%M')}</p>
+                        </div>
+                    """, unsafe_allow_html=True)
+            
+            # Show more button
+            if len(filtered_df) > 10:
+                if st.button("Load More Records"):
+                    st.session_state.show_all_records = True
             
             # Export data
-            st.subheader("Export Data")
+            st.subheader("Export")
             if st.button("Download as CSV"):
                 csv = filtered_df.to_csv(index=False)
                 st.download_button(
@@ -743,59 +625,6 @@ def main():
                     file_name="verification_history.csv",
                     mime="text/csv"
                 )
-    
-    # ---------- Data Insights Page ----------
-    elif menu == "Data Insights":
-        st.header("📊 Data Insights")
-        
-        # Load sample data for demonstration
-        sample_df = create_sample_data()
-        
-        st.subheader("Sample Data Overview")
-        st.dataframe(sample_df, use_container_width=True)
-        
-        # Basic statistics
-        st.subheader("Basic Statistics")
-        st.write(sample_df.describe())
-        
-        # Visualizations
-        st.subheader("Data Distributions")
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            # Age distribution
-            fig, ax = plt.subplots()
-            sample_df['age'].hist(bins=10, ax=ax)
-            ax.set_title('Age Distribution')
-            ax.set_xlabel('Age')
-            ax.set_ylabel('Count')
-            st.pyplot(fig)
-        
-        with col2:
-            # Credit score distribution
-            fig, ax = plt.subplots()
-            sample_df['current_credit_score'].hist(bins=10, ax=ax)
-            ax.set_title('Credit Score Distribution')
-            ax.set_xlabel('Credit Score')
-            ax.set_ylabel('Count')
-            st.pyplot(fig)
-        
-        # Correlation heatmap
-        st.subheader("Correlation Heatmap")
-        numeric_df = sample_df.select_dtypes(include=[np.number])
-        if not numeric_df.empty:
-            fig, ax = plt.subplots(figsize=(10, 8))
-            corr = numeric_df.corr()
-            im = ax.imshow(corr, cmap='coolwarm', interpolation='nearest')
-            ax.set_xticks(range(len(corr.columns)))
-            ax.set_yticks(range(len(corr.columns)))
-            ax.set_xticklabels(corr.columns, rotation=45, ha='right')
-            ax.set_yticklabels(corr.columns)
-            plt.colorbar(im)
-            st.pyplot(fig)
-        else:
-            st.info("No numeric data available for correlation analysis.")
     
     # ---------- Blockchain Status Page ----------
     elif menu == "Blockchain Status":
@@ -806,32 +635,26 @@ def main():
         col1, col2 = st.columns(2)
         
         with col1:
-            st.subheader("Connection Details")
-            st.write(f"**Provider URL:** {bm.provider_url}")
+            st.subheader("Connection")
+            st.write(f"**Provider:** {bm.provider_url}")
             
             if bm.is_connected():
                 st.success("✅ Connected to Blockchain")
                 try:
                     block_number = bm.w3.eth.block_number
                     st.write(f"**Latest Block:** {block_number}")
-                    
-                    if bm.account_address:
-                        balance = bm.w3.eth.get_balance(bm.account_address)
-                        st.write(f"**Account Balance:** {bm.w3.from_wei(balance, 'ether'):.4f} ETH")
                 except Exception as e:
                     st.error(f"Error retrieving blockchain data: {e}")
             else:
                 st.error("❌ Not connected to Blockchain")
         
         with col2:
-            st.subheader("Contract Details")
+            st.subheader("Contract")
             if bm.contract_address:
-                st.write(f"**Contract Address:** {bm.contract_address}")
+                st.write(f"**Address:** {bm.contract_address}")
                 
                 if bm.contract and bm.is_connected():
                     try:
-                        # Try to call a simple contract method to verify it works
-                        dummy_call = bm.contract.functions.getVerification("dummy_id").call()
                         st.success("✅ Contract is accessible")
                     except Exception as e:
                         st.error(f"❌ Contract error: {e}")
@@ -846,21 +669,6 @@ def main():
                 st.success("✅ Blockchain connection successful!")
             else:
                 st.error("❌ Could not connect to blockchain")
-        
-        # Local ledger info
-        st.subheader("Local Ledger")
-        if os.path.exists(LEDGER_PATH):
-            try:
-                with open(LEDGER_PATH, "r") as f:
-                    ledger = json.load(f)
-                st.write(f"**Entries in local ledger:** {len(ledger)}")
-                
-                if st.button("View Local Ledger"):
-                    st.json(ledger)
-            except Exception as e:
-                st.error(f"Error reading local ledger: {e}")
-        else:
-            st.info("Local ledger is empty")
     
     # ---------- Model Info Page ----------
     elif menu == "Model Info":
@@ -873,10 +681,10 @@ def main():
             
             # Model details
             st.subheader("Model Details")
-            st.write(f"**Model Type:** {type(model).__name__}")
+            st.write(f"**Type:** {type(model).__name__}")
             
             if hasattr(model, 'feature_importances_'):
-                st.subheader("Feature Importances")
+                st.subheader("Feature Importance")
                 
                 # Create feature importance plot
                 feature_names = [
@@ -884,7 +692,6 @@ def main():
                     'credit_history_length', 'num_previous_loans', 'num_defaults', 
                     'current_credit_score', 'loan_amount', 'loan_term_months', 
                     'loan_purpose', 'collateral_present', 'identity_verified_on_chain',
-                    'transaction_consistency_score', 'fraud_alert_flag', 
                     'on_chain_credit_history', 'income_to_loan_ratio', 
                     'credit_utilization', 'default_rate'
                 ]
@@ -894,30 +701,22 @@ def main():
                     importance_df = pd.DataFrame({
                         'feature': feature_names,
                         'importance': model.feature_importances_
-                    }).sort_values('importance', ascending=False)
+                    }).sort_values('importance', ascending=False).head(10)
                     
-                    fig, ax = plt.subplots(figsize=(10, 8))
+                    fig, ax = plt.subplots(figsize=(10, 6))
                     ax.barh(importance_df['feature'], importance_df['importance'])
                     ax.set_xlabel('Importance')
-                    ax.set_title('Feature Importances')
+                    ax.set_title('Top 10 Feature Importances')
                     st.pyplot(fig)
-                else:
-                    st.info("Feature importance dimensions don't match feature names")
             
-            # Model parameters
-            if hasattr(model, 'get_params'):
-                st.subheader("Model Parameters")
-                params = model.get_params()
-                st.json(params)
+            # SHAP availability
+            st.subheader("Explanation Capabilities")
+            if SHAP_AVAILABLE:
+                st.success("✅ SHAP available for model explanations")
+            else:
+                st.warning("⚠️ SHAP not installed. Install with: pip install shap")
         else:
             st.error("❌ Could not load model")
-        
-        # SHAP availability
-        st.subheader("Explanation Capabilities")
-        if SHAP_AVAILABLE:
-            st.success("✅ SHAP available for model explanations")
-        else:
-            st.warning("⚠️ SHAP not installed. Install with: pip install shap")
 
 if __name__ == "__main__":
     main()
