@@ -1,6 +1,7 @@
 # Credit Risk Verification System
 
-Industry-ready Streamlit app that evaluates credit risk and shows business impact.
+Industry-ready Streamlit app that evaluates credit risk and shows business impact. Try App online:[CRVS](https://credit-risk-blockchain-he6gnprqlveepzos9ud5pl.streamlit.app/)
+
 
 ## Features
 
@@ -15,7 +16,3 @@ Industry-ready Streamlit app that evaluates credit risk and shows business impac
 - Helps financial institutions **assess creditworthiness reliably**.
 - Reduces risk of **fraudulent applications**.
 - Provides **actionable insights** for loan approvals and portfolio management.
-
-## Try it Online
-
-[Launch the app](https://credit-risk-blockchain-he6gnprqlveepzos9ud5pl.streamlit.app/)
