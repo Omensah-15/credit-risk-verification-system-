@@ -378,9 +378,8 @@ if 'blockchain_manager' not in st.session_state:
     st.session_state.blockchain_manager = get_blockchain_manager()
 
 # -------------------- Streamlit UI --------------------
-st.set_page_config(page_title="Advanced Credit Risk Verification", layout="wide", page_icon="🔒")
-st.markdown("<h1 style='text-align:center;'>🔒 Advanced Credit Risk Verification</h1>", unsafe_allow_html=True)
-st.markdown("A compact app demonstrating ML inference + explainability + immutable verification (blockchain/JSON).")
+st.set_page_config(page_title="Credit Risk Verification", layout="wide", page_icon="🔒")
+st.markdown("<h1 style='text-align:center;'>🔒 Credit Risk Verification</h1>", unsafe_allow_html=True)
 
 menu = st.sidebar.selectbox("Navigation", ["New Verification", "Verification History", "Data Insights", "Blockchain Status", "Model Info"])
 
