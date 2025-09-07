@@ -3,8 +3,7 @@
 Industry-ready project that:
 - trains a LightGBM credit-risk model with Optuna,
 - applies SMOTE, calibration, and SHAP explanations,
-- stores/verifies results on-chain (Web3) or a local JSON ledger fallback,
-- optimized for CPU (~8 GB RAM).
+- stores/verifies results on-chain (Web3) or a local JSON ledger fallback
 
 ## Quickstart
 
