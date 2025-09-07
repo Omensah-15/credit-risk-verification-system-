@@ -7,7 +7,7 @@ Try App online:[CRVS](https://credit-risk-blockchain-he6gnprqlveepzos9ud5pl.stre
 - **ML-Powered Risk Prediction**: Trains a LightGBM credit-risk model with Optuna for hyperparameter optimization.
 - **Cryptographic Verification**: SHA-256 hashing for data integrity and tamper-evident records
 - **Immutable Local Storage**: JSON-based ledger with blockchain-inspired immutability patterns
-- **SHAP Explainability**: Transparent model decision explanations for regulatory compliance(currentlyindevelopment)
+- **SHAP Explainability**: Transparent model decision explanations for regulatory compliance(currently in development)
 - **Streamlit Web Interface**: User-friendly dashboard for complete risk assessment workflow
 
 ## Tech Stack:
