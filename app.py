@@ -203,19 +203,33 @@ def predict_batch(df: pd.DataFrame) -> pd.DataFrame:
     cats = [cat(p) for p in probs]
     return pd.DataFrame({"probability_of_default": probs, "risk_score": scores, "risk_category": cats}, index=df.index)
 
-# -------------------- SHAP helpers (sampled) --------------------
+# -------------------- SHAP helpers (robust) --------------------
+def get_base_model_for_shap(model):
+    """
+    Safely extract the underlying model for SHAP.
+    Works with CalibratedClassifierCV or normal models.
+    """
+    # normal scikit-learn model
+    if hasattr(model, "base_estimator"):
+        return model.base_estimator
+    # CalibratedClassifierCV
+    elif hasattr(model, "calibrated_classifiers_"):
+        # try to access underlying estimator of first class
+        cal = model.calibrated_classifiers_[0]
+        return getattr(cal, "estimator", model)  # fallback to model itself
+    # fallback: just use model
+    return model
+
 def explain_prediction_sampled(model, input_df: pd.DataFrame, background_df: Optional[pd.DataFrame] = None, nsample: int = 100):
     """
     Returns (explainer, shap_values) with memory-safe background sampling.
     """
     if not SHAP_AVAILABLE:
         raise RuntimeError("shap is not installed or failed to import.")
-    # base estimator if calibrated
-    if hasattr(model, "calibrated_classifiers_"):
-        base = model.calibrated_classifiers_[0].base_estimator
-    else:
-        base = load_base_model() or model
+    
+    base = get_base_model_for_shap(model)
 
+    # sample background if available
     if background_df is not None and len(background_df) > 0:
         background = background_df.sample(min(nsample, len(background_df)))
         explainer = shap.TreeExplainer(base, data=background)
@@ -224,14 +238,16 @@ def explain_prediction_sampled(model, input_df: pd.DataFrame, background_df: Opt
 
     shap_vals = explainer.shap_values(input_df)
     if isinstance(shap_vals, list):
-        shap_vals = shap_vals[1]
+        shap_vals = shap_vals[1] if len(shap_vals) > 1 else shap_vals[0]
     return explainer, shap_vals
 
 def plot_shap_decision(explainer, shap_values, features: pd.DataFrame, index: int = 0):
     fig, ax = plt.subplots(figsize=(10, 6))
     try:
-        shap.decision_plot(explainer.expected_value[1] if isinstance(explainer.expected_value, (list, tuple)) else explainer.expected_value,
-                           shap_values, features.iloc[index], show=False)
+        expected = explainer.expected_value
+        if isinstance(expected, (list, tuple)):
+            expected = expected[1] if len(expected) > 1 else expected[0]
+        shap.decision_plot(expected, shap_values, features.iloc[index], show=False)
     except Exception:
         try:
             shap.summary_plot(shap_values, features, show=False)
