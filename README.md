@@ -4,10 +4,10 @@ A machine learning-based credit risk assessment platform featuring robust data i
 Try App online:[CRVS](https://credit-risk-blockchain-he6gnprqlveepzos9ud5pl.streamlit.app/)
 
 ## Key Features:
-- **ML-Powered Risk Prediction**: Machine learning models for accurate default probability estimation
+- **ML-Powered Risk Prediction**: Trains a LightGBM credit-risk model with Optuna for hyperparameter optimization.
 - **Cryptographic Verification**: SHA-256 hashing for data integrity and tamper-evident records
 - **Immutable Local Storage**: JSON-based ledger with blockchain-inspired immutability patterns
-- **SHAP Explainability**: Transparent model decision explanations for regulatory compliance(Not yet available)
+- **SHAP Explainability**: Transparent model decision explanations for regulatory compliance(currentlyindevelopment)
 - **Streamlit Web Interface**: User-friendly dashboard for complete risk assessment workflow
 
 ## Tech Stack:
