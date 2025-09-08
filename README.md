@@ -1,4 +1,4 @@
-# AI Credit Risk Verification System with Cryptographic Audit Trail
+# AI Credit Risk Verification System (AI-CRVS)
 
 A machine learning-based credit risk assessment platform featuring robust data integrity protection through cryptographic hashing and local immutable storage, designed with blockchain-like principles for verification and audit capabilities.
 
