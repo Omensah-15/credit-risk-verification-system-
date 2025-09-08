@@ -24,3 +24,8 @@ Try App online: [AI-CRVS](https://credit-risk-blockchain-he6gnprqlveepzos9ud5pl.
 - Loan application processing and risk evaluation
 - Regulatory compliance with explainable AI requirements
 - Educational demonstration of fintech system architecture
+
+## 👨‍💻 Author
+
+**Developed by Mensah Obed**
+📧 [heavenzlebron7@gmail.com](mailto:heavenzlebron7@gmail.com)
