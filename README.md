@@ -30,6 +30,9 @@ Try App online: [AI-CRVS](https://credit-risk-blockchain-he6gnprqlveepzos9ud5pl.
 - Regulatory compliance with explainable AI requirements
 - Educational demonstration of fintech system architecture
 
+## License
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
 ## 👨‍💻 Author
 
 **Developed by Mensah Obed**
