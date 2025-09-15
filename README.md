@@ -2,9 +2,9 @@
 
 A machine learning-based credit risk assessment platform featuring robust data integrity protection through cryptographic hashing and local immutable storage, designed with blockchain-like principles for verification and audit capabilities.
 
-## Demo
 Try App online: [AI-CRVS](https://credit-risk-blockchain-he6gnprqlveepzos9ud5pl.streamlit.app/)
-####Screenshots
+
+### Screenshots
 ![image alt](https://github.com/Omensah-15/Image-Based-Anti-Counterfeit-Detection-with-SuperPoint/blob/e2bba3fdf564d8adfc6a72358ddf824b31dc17e7/asset/query_030.png)
 ![image alt](https://github.com/Omensah-15/Image-Based-Anti-Counterfeit-Detection-with-SuperPoint/blob/e2bba3fdf564d8adfc6a72358ddf824b31dc17e7/asset/query_030.png)
 
