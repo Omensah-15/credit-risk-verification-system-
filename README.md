@@ -31,7 +31,7 @@ Try App online: [AI-CRVS](https://credit-risk-blockchain-he6gnprqlveepzos9ud5pl.
 - Educational demonstration of fintech system architecture
 
 ## License
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the MIT License - see the [LICENSE](License.md) file for details.
 
 ## 👨‍💻 Author
 
