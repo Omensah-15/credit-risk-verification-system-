@@ -416,7 +416,7 @@ if 'blockchain_manager' not in st.session_state:
 
 # -------------------- Streamlit UI --------------------
 st.set_page_config(page_title="Credit Risk Verification", layout="wide", page_icon="🔒")
-st.markdown("<h1 style='text-align:center;'>🔒 Credit Risk Verification</h1>", unsafe_allow_html=True)
+st.markdown("<h1 style='text-align:center;'> Credit Risk Verification</h1>", unsafe_allow_html=True)
 
 menu = st.sidebar.selectbox("Navigation", ["New Verification", "Verification History", "Data Insights", "Blockchain Status", "Model Info"])
 
