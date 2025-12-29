@@ -45,7 +45,7 @@ DB_PATH = os.path.join(DATA_DIR, "verification_results.db")
 LEDGER_PATH = os.path.join(CONTRACTS_DIR, "ledger.json")
 FEATURE_COLUMNS_FILE = os.path.join(MODELS_DIR, "feature_columns.pkl")
 CALIBRATED_MODEL_FILE = os.path.join(MODELS_DIR, "calibration_model.pkl")
-BASE_MODEL_FILE = os.path.join(MODELS_DIR, "trained_lgbm_model.pkl")  # optional for SHAP
+BASE_MODEL_FILE = os.path.join(MODELS_DIR, "trained_lgbm_model.pkl")  # for SHAP
 
 # -------------------- DB init --------------------
 def init_db():
