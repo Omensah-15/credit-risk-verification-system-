@@ -2,7 +2,7 @@
 
 A machine learning-based credit risk assessment platform featuring robust data integrity protection through cryptographic hashing and local immutable storage, designed with blockchain-like principles for verification and audit capabilities.
 
-Try App online: [AI-CRVS](https://credit-risk-blockchain-he6gnprqlveepzos9ud5pl.streamlit.app/)
+Try App online: [AI-CRVS](https://czlbbhmfibanss9aduu74g.streamlit.app/)
 
 ### Demo Screenshots:
 ![image alt](https://github.com/Omensah-15/credit-risk-verification-system-/blob/76af53cf8520e526e026ff85919e422a1b359584/data/screenshots/Screenshot%202025-09-15%20152853.png)
