@@ -653,7 +653,7 @@ elif menu == "Verification History" or menu == "Verification History".replace(" 
 
         # CSV export
         csv = display_df.to_csv(index=False).encode("utf-8")
-        st.download_button("📥 Download CSV of History", csv, "verification_history.csv", "text/csv")
+        st.download_button(" Download CSV of History", csv, "verification_history.csv", "text/csv")
 
         # select & verify on-chain/ledger if tx exists
         ids_with_tx = display_df[display_df['tx_hash'].notnull()]['applicant_id'].tolist()
