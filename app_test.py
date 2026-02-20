@@ -3,7 +3,6 @@ import json
 import hashlib
 import sqlite3
 from datetime import datetime
-from functools import lru_cache
 from typing import Dict, Any, Tuple, Optional, List
 
 import joblib
@@ -14,7 +13,7 @@ import matplotlib.pyplot as plt
 
 
 st.set_page_config(
-    page_title="Credit Risk Assessment System",
+    page_title="Credit Risk Assessment",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -28,7 +27,6 @@ os.makedirs(MODELS_DIR, exist_ok=True)
 DB_PATH = os.path.join(DATA_DIR, "assessment_results.db")
 FEATURE_COLUMNS_FILE = os.path.join(MODELS_DIR, "feature_columns.pkl")
 CALIBRATED_MODEL_FILE = os.path.join(MODELS_DIR, "calibration_model.pkl")
-BASE_MODEL_FILE = os.path.join(MODELS_DIR, "trained_lgbm_model.pkl")
 
 # -------------------- Database Initialization --------------------
 def init_db():
@@ -57,11 +55,9 @@ init_db()
 def generate_data_hash(data: Dict[str, Any]) -> str:
     """
     Generate deterministic SHA-256 hash of applicant data.
-    Excludes transient fields like submission_timestamp/timestamp.
     """
     data_copy = dict(data)
-    for transient in ("submission_timestamp", "timestamp"):
-        data_copy.pop(transient, None)
+    data_copy.pop("submission_timestamp", None)
     canonical = json.dumps(data_copy, sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
@@ -72,13 +68,11 @@ def verify_data_hash(data: Dict[str, Any], original_hash: str) -> bool:
 # -------------------- Preprocessing --------------------
 EMPLOYMENT_MAPPING = {'employed': 0, 'self-employed': 1, 'unemployed': 2, 'student': 3}
 EDUCATION_MAPPING = {'High School': 0, 'Diploma': 1, 'Bachelor': 2, 'Master': 3, 'PhD': 4}
-LOAN_PURPOSE_MAPPING = {'Business': 0, 'Crypto-Backed': 1, 'Car Loan': 2, 'Education': 3, 'Home Loan': 4}
+LOAN_PURPOSE_MAPPING = {'Business': 0, 'Personal': 1, 'Car Loan': 2, 'Education': 3, 'Home Loan': 4}
 
 def preprocess_inference_data(input_data) -> pd.DataFrame:
     """
     Preprocess input data for model inference.
-    Accepts dict (single row) or DataFrame (batch).
-    Returns DataFrame aligned with training features.
     """
     if isinstance(input_data, dict):
         df = pd.DataFrame([input_data])
@@ -112,8 +106,7 @@ def preprocess_inference_data(input_data) -> pd.DataFrame:
     # Load expected feature columns
     if not os.path.exists(FEATURE_COLUMNS_FILE):
         raise FileNotFoundError(
-            f"Feature columns file not found: {FEATURE_COLUMNS_FILE}. "
-            "Please run train.py first to generate the required model files."
+            f"Feature columns file not found. Please run train.py first."
         )
 
     feature_columns: List[str] = joblib.load(FEATURE_COLUMNS_FILE)
@@ -128,7 +121,7 @@ def preprocess_inference_data(input_data) -> pd.DataFrame:
 # -------------------- Model Loading --------------------
 @st.cache_resource
 def load_models() -> Tuple[Optional[object], Optional[List[str]]]:
-    """Load calibrated model and feature columns. Returns (model, features) or (None, None)."""
+    """Load calibrated model and feature columns."""
     try:
         model = joblib.load(CALIBRATED_MODEL_FILE)
         feature_columns = joblib.load(FEATURE_COLUMNS_FILE)
@@ -179,7 +172,7 @@ if 'assessment_results' not in st.session_state:
 st.title("Credit Risk Assessment System")
 st.markdown("---")
 
-# Sidebar navigation (simplified)
+# Sidebar navigation
 menu = st.sidebar.selectbox(
     "Navigation",
     ["New Assessment", "Assessment History"]
@@ -193,43 +186,51 @@ if menu == "New Assessment":
         col1, col2 = st.columns(2)
         
         with col1:
-            st.subheader("Applicant Information")
-            applicant_id = st.text_input("Applicant ID*", help="Unique identifier for the applicant")
-            applicant_name = st.text_input("Full Name*")
-            applicant_email = st.text_input("Email*")
+            st.subheader("Personal Information")
+            applicant_id = st.text_input("Applicant ID *", help="Unique identifier for the applicant")
+            applicant_name = st.text_input("Full Name *")
+            applicant_email = st.text_input("Email Address *")
             age = st.slider("Age", 18, 100, 30)
-            annual_income = st.number_input("Annual Income (USD)*", min_value=0, value=50000, step=1000)
             employment_status = st.selectbox("Employment Status", ["employed", "self-employed", "unemployed", "student"])
             education_level = st.selectbox("Education Level", ["High School", "Diploma", "Bachelor", "Master", "PhD"])
-            credit_history_length = st.slider("Credit History (years)", 0, 30, 5)
         
         with col2:
-            st.subheader("Loan Details")
-            num_previous_loans = st.slider("Number of Previous Loans", 0, 20, 2)
-            num_defaults = st.slider("Number of Defaults", 0, 10, 0)
-            avg_payment_delay_days = st.slider("Avg Payment Delay (days)", 0, 60, 5)
-            current_credit_score = st.slider("Current Credit Score", 300, 850, 650)
-            loan_amount = st.number_input("Loan Amount (USD)*", min_value=0, value=25000, step=1000)
+            st.subheader("Financial Information")
+            annual_income = st.number_input("Annual Income (USD) *", min_value=0, value=50000, step=1000, format="%d")
+            loan_amount = st.number_input("Loan Amount (USD) *", min_value=0, value=25000, step=1000, format="%d")
+            loan_purpose = st.selectbox("Loan Purpose", ["Business", "Personal", "Car Loan", "Education", "Home Loan"])
             loan_term_months = st.slider("Loan Term (months)", 12, 84, 36)
-            loan_purpose = st.selectbox("Loan Purpose", ["Business", "Crypto-Backed", "Car Loan", "Education", "Home Loan"])
-            collateral_present = st.radio("Collateral Present", ["Yes", "No"])
-
-        st.subheader("Additional Information")
+            collateral_present = st.radio("Collateral Present", ["Yes", "No"], horizontal=True)
+        
+        st.markdown("---")
+        
         col3, col4 = st.columns(2)
         
         with col3:
-            identity_verified = st.radio("Identity Verified", [1, 0], format_func=lambda x: "Yes" if x == 1 else "No")
-            fraud_alert = st.radio("Fraud Alert Flag", [0, 1], format_func=lambda x: "Yes" if x == 1 else "No")
+            st.subheader("Credit History")
+            credit_history_length = st.slider("Credit History (years)", 0, 30, 5)
+            num_previous_loans = st.slider("Number of Previous Loans", 0, 20, 2)
+            num_defaults = st.slider("Number of Defaults", 0, 10, 0)
+            current_credit_score = st.slider("Current Credit Score", 300, 850, 650)
         
         with col4:
-            transaction_consistency = st.slider("Transaction Consistency Score", 0.0, 1.0, 0.8)
-            digital_footprint = st.slider("Digital Footprint Score", 0, 10, 5)
+            st.subheader("Payment Behavior")
+            avg_payment_delay_days = st.slider("Average Payment Delay (days)", 0, 60, 5)
 
-        submitted = st.form_submit_button("Run Assessment", type="primary")
+        submitted = st.form_submit_button("Run Assessment", type="primary", use_container_width=True)
 
     if submitted:
-        if not all([applicant_id, applicant_name, applicant_email]):
-            st.error("Please provide Applicant ID, Name, and Email.")
+        # Validate required fields
+        missing_fields = []
+        if not applicant_id:
+            missing_fields.append("Applicant ID")
+        if not applicant_name:
+            missing_fields.append("Full Name")
+        if not applicant_email:
+            missing_fields.append("Email Address")
+        
+        if missing_fields:
+            st.error(f"Please provide: {', '.join(missing_fields)}")
         else:
             with st.spinner("Processing assessment..."):
                 application = {
@@ -249,10 +250,6 @@ if menu == "New Assessment":
                     "loan_term_months": int(loan_term_months),
                     "loan_purpose": loan_purpose,
                     "collateral_present": collateral_present,
-                    "identity_verified": int(identity_verified),
-                    "transaction_consistency": float(transaction_consistency),
-                    "fraud_alert": int(fraud_alert),
-                    "digital_footprint": int(digital_footprint),
                     "submission_timestamp": datetime.utcnow().isoformat()
                 }
 
@@ -303,23 +300,69 @@ if menu == "New Assessment":
                     "timestamp": datetime.utcnow().isoformat()
                 }
 
-                # Display results
-                st.success("Assessment completed successfully!")
+                # Display results in a clean format
                 st.markdown("### Assessment Results")
                 
-                c1, c2, c3 = st.columns(3)
-                c1.metric("Risk Score", f"{score}/1000")
-                c2.metric("Default Probability", f"{proba:.2%}")
-                c3.metric("Risk Category", category)
+                # Results in a nice container
+                with st.container():
+                    col_result1, col_result2, col_result3 = st.columns(3)
+                    
+                    # Risk Score with color coding based on value
+                    score_color = "green" if score > 700 else "orange" if score > 400 else "red"
+                    col_result1.markdown(
+                        f"""
+                        <div style="padding: 20px; border-radius: 10px; background-color: #f0f2f6; text-align: center;">
+                            <p style="color: #666; margin-bottom: 5px;">Risk Score</p>
+                            <p style="font-size: 36px; font-weight: bold; color: {score_color};">{score}</p>
+                            <p style="color: #666;">/1000</p>
+                        </div>
+                        """, 
+                        unsafe_allow_html=True
+                    )
+                    
+                    # Default Probability
+                    proba_color = "green" if proba < 0.2 else "orange" if proba < 0.4 else "red"
+                    col_result2.markdown(
+                        f"""
+                        <div style="padding: 20px; border-radius: 10px; background-color: #f0f2f6; text-align: center;">
+                            <p style="color: #666; margin-bottom: 5px;">Default Probability</p>
+                            <p style="font-size: 36px; font-weight: bold; color: {proba_color};">{proba:.1%}</p>
+                        </div>
+                        """, 
+                        unsafe_allow_html=True
+                    )
+                    
+                    # Risk Category
+                    category_colors = {
+                        "Very Low Risk": "#28a745",
+                        "Low Risk": "#5cb85c",
+                        "Medium Risk": "#f0ad4e",
+                        "High Risk": "#d9534f",
+                        "Very High Risk": "#c9302c"
+                    }
+                    cat_color = category_colors.get(category, "#666")
+                    col_result3.markdown(
+                        f"""
+                        <div style="padding: 20px; border-radius: 10px; background-color: #f0f2f6; text-align: center;">
+                            <p style="color: #666; margin-bottom: 5px;">Risk Category</p>
+                            <p style="font-size: 28px; font-weight: bold; color: {cat_color};">{category}</p>
+                        </div>
+                        """, 
+                        unsafe_allow_html=True
+                    )
 
-                st.markdown(f"**Data Hash:** `{data_hash}`")
+                # Data hash display
+                st.markdown("### Data Integrity")
+                st.code(data_hash, language="text")
                 
-                # Data integrity verification option
-                if st.button("Verify Data Integrity"):
-                    if verify_data_hash(application, data_hash):
-                        st.success("✓ Data integrity verified - Hash matches")
-                    else:
-                        st.error("✗ Data integrity check failed - Hash mismatch")
+                # Verification button
+                col_verify, _ = st.columns([1, 3])
+                with col_verify:
+                    if st.button("Verify Data Integrity", use_container_width=True):
+                        if verify_data_hash(application, data_hash):
+                            st.success("Data integrity verified - Hash matches")
+                        else:
+                            st.error("Data integrity check failed - Hash mismatch")
 
 # -------------------- Assessment History --------------------
 elif menu == "Assessment History":
@@ -332,83 +375,81 @@ elif menu == "Assessment History":
         conn.close()
 
     if df.empty:
-        st.info("No assessment records yet. Create a new assessment to get started.")
+        st.info("No assessment records found. Create a new assessment to get started.")
     else:
-        df['probability_of_default'] = pd.to_numeric(df['probability_of_default'], errors='coerce')
-
         # Summary statistics
         st.subheader("Summary Statistics")
         col1, col2, col3 = st.columns(3)
-        col1.metric("Total Assessments", len(df))
-        col2.metric("Average Risk Score", f"{df['risk_score'].mean():.0f}")
-        col3.metric("High Risk Count", len(df[df['risk_category'].str.contains('High', na=False)]))
+        
+        with col1:
+            st.metric("Total Assessments", len(df))
+        
+        with col2:
+            avg_score = df['risk_score'].mean()
+            st.metric("Average Risk Score", f"{avg_score:.0f}")
+        
+        with col3:
+            high_risk_count = len(df[df['risk_category'].str.contains('High', na=False)])
+            st.metric("High Risk Cases", high_risk_count)
 
-        # Display records
+        # Assessment records table
         st.subheader("Assessment Records")
         
-        # Format for display
+        # Prepare display dataframe
         display_df = df.copy()
         display_df['probability_of_default'] = display_df['probability_of_default'].apply(
-            lambda x: f"{float(x):.2%}" if pd.notnull(x) else "N/A"
+            lambda x: f"{float(x):.1%}" if pd.notnull(x) else "N/A"
         )
         display_df['data_hash_short'] = display_df['data_hash'].apply(lambda x: f"{x[:16]}..." if x else "N/A")
+        display_df['timestamp'] = pd.to_datetime(display_df['timestamp']).dt.strftime('%Y-%m-%d %H:%M')
 
+        # Display as a clean table
         st.dataframe(
             display_df[[
                 'applicant_id', 'applicant_name', 'risk_score', 'risk_category',
-                'probability_of_default', 'data_hash_short', 'timestamp'
+                'probability_of_default', 'timestamp'
             ]],
             use_container_width=True,
             column_config={
                 "applicant_id": "Applicant ID",
                 "applicant_name": "Name",
                 "risk_score": "Risk Score",
-                "risk_category": "Category",
-                "probability_of_default": "Default Probability",
-                "data_hash_short": "Data Hash",
-                "timestamp": "Timestamp"
+                "risk_category": "Risk Category",
+                "probability_of_default": "Default Prob.",
+                "timestamp": "Assessment Date"
             }
         )
 
-        # Export functionality
-        csv = display_df.to_csv(index=False).encode("utf-8")
-        st.download_button(
-            "Download CSV Export",
-            csv,
-            "assessment_history.csv",
-            "text/csv",
-            key='download-csv'
-        )
-
-        # Detailed view with data integrity check
-        st.subheader("Verify Record Integrity")
-        selected_id = st.selectbox(
-            "Select Applicant ID to verify",
-            df['applicant_id'].tolist()
-        )
+        # Export and verify section
+        col_export, col_verify = st.columns(2)
         
-        if selected_id:
-            record = df[df['applicant_id'] == selected_id].iloc[0]
-            
-            st.markdown(f"**Stored Data Hash:** `{record['data_hash']}`")
-            
-            # Recreate data for verification (simplified example)
-            if st.button("Verify Data Integrity"):
-                # In a real scenario, you'd need to reconstruct the original data
-                # This is a simplified example showing how to verify
-                st.info("Data integrity verification would compare current data with stored hash")
+        with col_export:
+            csv = display_df.to_csv(index=False).encode("utf-8")
+            st.download_button(
+                "Download CSV Export",
+                csv,
+                "assessment_history.csv",
+                "text/csv",
+                use_container_width=True
+            )
+        
+        with col_verify:
+            # Record verification
+            if not df.empty:
+                selected_id = st.selectbox(
+                    "Select applicant to verify",
+                    df['applicant_id'].tolist(),
+                    key="verify_select"
+                )
                 
-                # Example verification (would need original data reconstruction)
-                sample_data = {
-                    "applicant_id": record['applicant_id'],
-                    "applicant_name": record['applicant_name'],
-                    "applicant_email": record['applicant_email'],
-                    "age": record['age']
-                }
-                
-                new_hash = generate_data_hash(sample_data)
-                
-                if new_hash == record['data_hash']:
-                    st.success("✓ Data integrity verified - Hash matches")
-                else:
-                    st.warning("Note: Full verification requires complete original data")
+                if selected_id and st.button("Verify Record Integrity", use_container_width=True):
+                    record = df[df['applicant_id'] == selected_id].iloc[0]
+                    
+                    st.markdown("**Stored Data Hash:**")
+                    st.code(record['data_hash'], language="text")
+                    
+                    # Simplified verification note
+                    st.info(
+                        "To fully verify data integrity, you would need to reconstruct "
+                        "the original application data and compare its hash with the stored hash."
+                    )
