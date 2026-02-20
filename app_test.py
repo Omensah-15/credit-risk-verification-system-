@@ -11,7 +11,7 @@ import numpy as np
 import streamlit as st
 import matplotlib.pyplot as plt
 
-
+# MUST BE FIRST STREAMLIT COMMAND
 st.set_page_config(
     page_title="Credit Risk Assessment",
     layout="wide",
@@ -195,9 +195,9 @@ if menu == "New Assessment":
             education_level = st.selectbox("Education Level", ["High School", "Diploma", "Bachelor", "Master", "PhD"])
         
         with col2:
-            st.subheader("Financial Information")
-            annual_income = st.number_input("Annual Income (USD) *", min_value=0, value=50000, step=1000, format="%d")
-            loan_amount = st.number_input("Loan Amount (USD) *", min_value=0, value=25000, step=1000, format="%d")
+            st.subheader("Financial Information (GHS)")
+            annual_income = st.number_input("Annual Income (GHS) *", min_value=0, value=50000, step=1000, format="%d")
+            loan_amount = st.number_input("Loan Amount (GHS) *", min_value=0, value=25000, step=1000, format="%d")
             loan_purpose = st.selectbox("Loan Purpose", ["Business", "Personal", "Car Loan", "Education", "Home Loan"])
             loan_term_months = st.slider("Loan Term (months)", 12, 84, 36)
             collateral_present = st.radio("Collateral Present", ["Yes", "No"], horizontal=True)
@@ -346,6 +346,32 @@ if menu == "New Assessment":
                         <div style="padding: 20px; border-radius: 10px; background-color: #f0f2f6; text-align: center;">
                             <p style="color: #666; margin-bottom: 5px;">Risk Category</p>
                             <p style="font-size: 28px; font-weight: bold; color: {cat_color};">{category}</p>
+                        </div>
+                        """, 
+                        unsafe_allow_html=True
+                    )
+
+                # Display financial summary with GHS
+                st.markdown("### Financial Summary")
+                col_fin1, col_fin2 = st.columns(2)
+                
+                with col_fin1:
+                    st.markdown(
+                        f"""
+                        <div style="padding: 15px; border-radius: 8px; background-color: #f0f2f6;">
+                            <p style="color: #666; margin-bottom: 5px;">Annual Income</p>
+                            <p style="font-size: 24px; font-weight: bold;">GHS {annual_income:,.0f}</p>
+                        </div>
+                        """, 
+                        unsafe_allow_html=True
+                    )
+                
+                with col_fin2:
+                    st.markdown(
+                        f"""
+                        <div style="padding: 15px; border-radius: 8px; background-color: #f0f2f6;">
+                            <p style="color: #666; margin-bottom: 5px;">Loan Amount</p>
+                            <p style="font-size: 24px; font-weight: bold;">GHS {loan_amount:,.0f}</p>
                         </div>
                         """, 
                         unsafe_allow_html=True
