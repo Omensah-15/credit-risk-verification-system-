@@ -929,9 +929,9 @@ if menu == "🔍 New Verification":
             st.markdown("")
             col_btn1, col_btn2, _ = st.columns([1, 1, 3])
             with col_btn1:
-                store_btn = st.button("📌 Store to Ledger", key="store_btn")
+                store_btn = st.button("Store to Ledger", key="store_btn")
             with col_btn2:
-                shap_btn = st.button("🔎 Explain (SHAP)", key="shap_btn") if SHAP_AVAILABLE else None
+                shap_btn = st.button("Explain (SHAP)", key="shap_btn") if SHAP_AVAILABLE else None
 
             if store_btn:
                 with st.spinner("Recording verification…"):
@@ -1079,7 +1079,7 @@ elif menu == "History":
         if stored_ids:
             st.markdown("#### Verify Ledger Record")
             sel_id = st.selectbox("Select Applicant ID", stored_ids, key="lookup_id")
-            if st.button("🔍 Fetch Record", key="fetch_ledger"):
+            if st.button("Fetch Record", key="fetch_ledger"):
                 rec = bm.get_verification(sel_id)
                 if 'error' in rec:
                     st.error("Record not found in ledger.")
@@ -1242,7 +1242,7 @@ elif menu == "⛓ Ledger":
 
             col_a, col_b = st.columns(2)
             with col_a:
-                if st.button("🔄 Refresh Ledger View", key="refresh_ledger"):
+                if st.button("Refresh Ledger View", key="refresh_ledger"):
                     st.rerun()
         except Exception as e:
             st.error(f"Could not read ledger: {e}")
