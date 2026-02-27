@@ -8,20 +8,27 @@ A machine learning-based credit risk assessment platform featuring robust data i
 ![Demo](https://github.com/Omensah-15/credit-risk-verification-system-/blob/36572477889dd66245758266432c89a38f6cefe8/data/demo_eg/demo3.gif)
 
 ## Key Features:
-- **ML-Powered Risk Prediction**: Trains a LightGBM credit-risk model with Optuna for hyperparameter optimization.
+- **ML-Powered Risk Prediction**: LightGBM model with calibration for accurate credit risk scoring
 - **Cryptographic Verification**: SHA-256 hashing for data integrity and tamper-evident records
-- **Immutable Local Storage**: JSON-based ledger with blockchain-inspired immutability patterns
-- **SHAP Explainability**: Transparent model decision explanations for regulatory compliance (currently in development)
+- **Immutable Local Storage**: SQLite database with cryptographic verification
+- **Dual Model Architecture**: Base LightGBM model with calibration layer for improved probability estimates
 - **Streamlit Web Interface**: User-friendly dashboard for complete risk assessment workflow
-
+  
 ## Tech Stack:
-- Python, Scikit-Learn, Streamlit, SHAP, Cryptographic Hashing, Local JSON Database
+- Python 3.8+
+- Scikit-learn
+- LightGBM
+- Streamlit
+- SQLite3
+- Cryptographic Hashing (SHA-256)
+- Pandas & NumPy
 
 ## Architecture Highlights:
 - **Data Integrity**: All records cryptographically hashed to prevent tampering
 - **Audit Trail**: Complete verification history with timestamps and hashes
-- **Blockchain-Ready**: Architecture designed for easy migration to actual blockchain
-- **Fallback System**: Robust local storage that maintains verification capabilities
+- **Blockchain-Like Verification**: Tamper-proof record keeping without blockchain complexity
+- **Feature Engineering**: Advanced financial ratio calculations for better predictions
+- **Risk Categorization**: 5-tier risk classification system
 
 ## Use Cases:
 - Banking and financial services preliminary credit assessment
