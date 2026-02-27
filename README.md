@@ -5,6 +5,7 @@ A machine learning-based credit risk assessment platform featuring robust data i
 **TRY APP ONLINE**: **[AI-CRVS](https://czlbbhmfibanss9aduu74g.streamlit.app/)**
 
 ### Demo:
+![Demo](https://github.com/Omensah-15/credit-risk-verification-system-/blob/36572477889dd66245758266432c89a38f6cefe8/data/demo_eg/demo3.gif)
 ![image alt](https://github.com/Omensah-15/credit-risk-verification-system-/blob/86dd219de71ed1c43eeff56b7bedb68d456537e7/data/demo_eg/Screenshot_20260121_155410.png)
 ![image alt](https://github.com/Omensah-15/credit-risk-verification-system-/blob/e6b029be84bf2c428fa66220dae8e688628aca07/data/demo_eg/Screenshot_20260121_154836.png)
 
