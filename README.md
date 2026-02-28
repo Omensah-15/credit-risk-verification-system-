@@ -5,7 +5,6 @@ A machine learning-based credit risk assessment platform featuring robust data i
 **TRY APP ONLINE**: **[CreditIQ](https://czlbbhmfibanss9aduu74g.streamlit.app/)**
 
 ### Demo:
-<img src="https://github.com/Omensah-15/credit-risk-verification-system-/blob/36572477889dd66245758266432c89a38f6cefe8/data/demo_eg/demo3.gif" alt="Demo" width="800">
 <div align="center">
   <img src="https://github.com/Omensah-15/credit-risk-verification-system-/blob/36572477889dd66245758266432c89a38f6cefe8/data/demo_eg/demo3.gif" alt="Demo" width="800">
 </div>
