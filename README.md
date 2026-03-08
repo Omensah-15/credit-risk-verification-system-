@@ -41,8 +41,7 @@ A machine learning-based credit risk assessment platform featuring robust data i
 ## License
 This project is licensed under the MIT License - see the [LICENSE](License.md) file for details.
 
-## 👨‍💻 Author
+## Author
 
 **Mensah Obed**
-[Email](mailto:heavenzlebron7@gmail.com) 
-[LinkedIn](https://www.linkedin.com/in/obed-mensah-87001237b)
+[Email](mailto:heavenzlebron7@gmail.com) · [LinkedIn](https://www.linkedin.com/in/obed-mensah-87001237b)
