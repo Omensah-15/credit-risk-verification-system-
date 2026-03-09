@@ -39,7 +39,7 @@ A machine learning-based credit risk assessment platform featuring robust data i
 - Educational demonstration of fintech system architecture
 
 ## License
-This project is licensed under the MIT License - see the [LICENSE](License.md) file for details.
+This project is licensed under the MIT License - see the [LICENSE](https://github.com/Omensah-15/credit-risk-verification-system-/blob/622a0c0e3983a8541e322e645a8dd013474ad1cf/LICENSE) file for details.
 
 ## Author
 
