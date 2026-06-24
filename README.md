@@ -6,7 +6,7 @@ A machine learning-based credit risk assessment platform featuring robust data i
 
 ### Demo:
 <div align="center">
-  <img src="https://github.com/Omensah-15/credit-risk-verification-system-/blob/36572477889dd66245758266432c89a38f6cefe8/data/demo_eg/demo3.gif" alt="Demo" width="800">
+  <img src="https://github.com/Omensah-15/credit-risk-verification-system-/blob/8a913b5c5a4fd8fcf1ec3354bbe7a44a271abc01/data/demo_eg/demo3.gif" alt="Demo" width="800">
 </div>
 
 ## Key Features:
